@@ -5,15 +5,22 @@ import {
   Map as MlMap,
   NavigationControl,
   ScaleControl,
+  setWorkerUrl,
   type GeoJSONSource,
   type MapMouseEvent,
   type MapTouchEvent,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// MapLibre 6 loads its worker from a separate module file. Let the bundler emit it (with its
+// imports) and tell MapLibre where it is, otherwise the production build has no worker and the
+// map stays blank.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { createFrame } from '../../core/geo/frame';
 import { CS2, type Selection } from '../../core/types';
 import { useStore } from '../store';
+
+setWorkerUrl(maplibreWorkerUrl);
 import {
   clampSize,
   distanceM,
