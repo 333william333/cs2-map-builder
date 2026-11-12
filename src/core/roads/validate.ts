@@ -9,7 +9,7 @@ import {
   angleBetween, bezEndDir, bezLength, bezMinRadius, bezStartDir, bezTotalTurn, pointSegDist2, polyLength,
   projectSeg, segIntersect, segSegDist,
 } from './geom';
-import { PointGrid, SegGrid } from './spatial';
+import { BoxGrid, PointGrid } from './spatial';
 
 export type ViolationKind =
   | 'structure' | 'length' | 'shape' | 'nodeGap' | 'angle' | 'clearance' | 'border' | 'outside'
@@ -31,7 +31,11 @@ function edgeLevel(e: RoadEdge) {
   return { bridge: e.bridge, tunnel: e.tunnel, layer: 0 };
 }
 
-export function findViolations(net: RoadNetwork, maxReports = 100000): Violation[] {
+/**
+ * All violations of the in-game rules. With `focus` (edge indices) only problems involving
+ * those edges (and their nodes) are reported: used between repair rounds.
+ */
+export function findViolations(net: RoadNetwork, maxReports = 100000, focus?: Set<number>): Violation[] {
   const out: Violation[] = [];
   const add = (v: Violation) => {
     if (out.length < maxReports) out.push(v);
@@ -87,6 +91,7 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
       add({ kind: 'structure', msg: `edges ${edges[prev].id} and ${e.id} connect the same two nodes`, edges: [prev, k], nodes: [ia, ib] });
     } else pairs.set(pk, k);
     ok[k] = true;
+    if (focus && !focus.has(k)) return;
 
     // length and shape
     const L = bezLength(bz, 96);
@@ -117,11 +122,24 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
   });
 
   // node spacing
+  let focusNodes: Set<number> | null = null;
+  if (focus) {
+    focusNodes = new Set<number>();
+    for (const k of focus) {
+      const e = edges[k];
+      if (!e) continue;
+      const ia = byId.get(e.a);
+      const ib = byId.get(e.b);
+      if (ia !== undefined) focusNodes.add(ia);
+      if (ib !== undefined) focusNodes.add(ib);
+    }
+  }
   const pg = new PointGrid(32);
   nodes.forEach((n, i) => pg.add(n.p[0], n.p[1], i));
   nodes.forEach((n, i) => {
+    if (focusNodes && !focusNodes.has(i)) return;
     pg.near(n.p[0], n.p[1], MIN_NODE_GAP - 1e-6, (j, d) => {
-      if (j <= i) return;
+      if (j === i || (j < i && (!focusNodes || focusNodes.has(j)))) return;
       add({ kind: 'nodeGap', msg: `nodes ${n.id} and ${nodes[j].id} are ${d.toFixed(1)} m apart`, edges: [], nodes: [i, j] });
     });
     if (Math.abs(n.p[0]) > HALF + 1e-9 || Math.abs(n.p[1]) > HALF + 1e-9) {
@@ -141,6 +159,7 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
     return [-d[0], -d[1]] as [number, number];
   };
   nodes.forEach((n, i) => {
+    if (focusNodes && !focusNodes.has(i)) return;
     const list = inc[i];
     for (let x = 0; x < list.length; x++) {
       for (let y = x + 1; y < list.length; y++) {
@@ -190,7 +209,7 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
   // elevation
   const Y = (i: number) => nodes[i].ground + nodes[i].elevation;
   edges.forEach((e, k) => {
-    if (!ok[k]) return;
+    if (!ok[k] || (focus && !focus.has(k))) return;
     const ia = byId.get(e.a)!;
     const ib = byId.get(e.b)!;
     for (const i of [ia, ib]) {
@@ -219,34 +238,41 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
   // clearance between unconnected same-level edges; vertical clearance at grade separations
   const E = edges.length;
   const bb = new Float64Array(E * 4);
-  const pre: Float64Array[] = [];
-  const idx = new SegGrid(64);
+  const preCache: (Float64Array | undefined)[] = new Array(E);
+  const preOf = (k: number): Float64Array => {
+    let c = preCache[k];
+    if (!c) {
+      const p = edges[k].pts;
+      c = new Float64Array(p.length);
+      for (let i = 1; i < p.length; i++) c[i] = c[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      preCache[k] = c;
+    }
+    return c;
+  };
+  const idx = new BoxGrid(128);
   edges.forEach((e, k) => {
     let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
-    const c = new Float64Array(e.pts.length);
-    for (let i = 0; i < e.pts.length; i++) {
-      const p = e.pts[i];
+    for (const p of e.pts) {
       if (p[0] < x0) x0 = p[0];
       if (p[0] > x1) x1 = p[0];
       if (p[1] < z0) z0 = p[1];
       if (p[1] > z1) z1 = p[1];
-      if (i) c[i] = c[i - 1] + Math.hypot(p[0] - e.pts[i - 1][0], p[1] - e.pts[i - 1][1]);
     }
     bb[k * 4] = x0; bb[k * 4 + 1] = z0; bb[k * 4 + 2] = x1; bb[k * 4 + 3] = z1;
-    pre[k] = c;
-    if (ok[k]) for (let i = 0; i + 1 < e.pts.length; i++) idx.add(e.pts[i][0], e.pts[i][1], e.pts[i + 1][0], e.pts[i + 1][1], k);
+    if (ok[k]) idx.add(x0, z0, x1, z1, k);
   });
   const maxNeed = 2 * Math.max(...Object.values(PREFAB_WIDTH)) / 2 + 6;
   const seen = new Int32Array(E).fill(-1);
   edges.forEach((e, k) => {
-    if (!ok[k]) return;
+    if (!ok[k] || (focus && !focus.has(k))) return;
     const ia = byId.get(e.a)!;
     const ib = byId.get(e.b)!;
     const kindE = levelKey(edgeLevel(e));
-    const Ek = pre[k][pre[k].length - 1];
-    idx.query(bb[k * 4] - maxNeed, bb[k * 4 + 1] - maxNeed, bb[k * 4 + 2] + maxNeed, bb[k * 4 + 3] + maxNeed, (sid) => {
-      const o = idx.owner(sid);
-      if (o <= k || seen[o] === k) return;
+    const prk = preOf(k);
+    const Ek = prk[prk.length - 1];
+    idx.query(bb[k * 4] - maxNeed, bb[k * 4 + 1] - maxNeed, bb[k * 4 + 2] + maxNeed, bb[k * 4 + 3] + maxNeed, (o) => {
+      if (o === k || seen[o] === k) return;
+      if (o < k && (!focus || focus.has(o))) return;
       seen[o] = k;
       const f = edges[o];
       const fa = byId.get(f.a)!;
@@ -257,10 +283,11 @@ export function findViolations(net: RoadNetwork, maxReports = 100000): Violation
       const need = same ? clearance(e.prefab, f.prefab) : 0;
       if (bb[o * 4] > bb[k * 4 + 2] + need || bb[o * 4 + 2] < bb[k * 4] - need) return;
       if (bb[o * 4 + 1] > bb[k * 4 + 3] + need || bb[o * 4 + 3] < bb[k * 4 + 1] - need) return;
-      const Eo = pre[o][pre[o].length - 1];
+      const pro = preOf(o);
+      const Eo = pro[pro.length - 1];
       const height = (i: number, ti: number, j: number, tj: number): [number, number] => {
-        const te = (pre[k][i] + ti * (pre[k][i + 1] - pre[k][i])) / Ek;
-        const tf = (pre[o][j] + tj * (pre[o][j + 1] - pre[o][j])) / Eo;
+        const te = (prk[i] + ti * (prk[i + 1] - prk[i])) / Ek;
+        const tf = (pro[j] + tj * (pro[j + 1] - pro[j])) / Eo;
         return [Y(ia) + (Y(ib) - Y(ia)) * te, Y(fa) + (Y(fb) - Y(fa)) * tf];
       };
       for (let i = 0; i + 1 < e.pts.length; i++) {

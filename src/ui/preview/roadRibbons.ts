@@ -27,7 +27,7 @@ export interface RibbonInput {
   pts: Pt[];
   style: RibbonStyle;
   /** deck heights (absolute) at the first/last point; the deck is a straight line between them */
-  deck?: { y0: number; y1: number; hump?: number };
+  deck?: { y0: number; y1: number; hump?: number; exact?: boolean };
   /** last point connects back to the first (outlines) */
   closed?: boolean;
 }
@@ -195,8 +195,8 @@ export function buildRibbons(
       if (deck) {
         const t = total > 0 ? S[i] / total : 0;
         const dy = deck.y0 + (deck.y1 - deck.y0) * t + (deck.hump ?? 0) * Math.sin(Math.PI * t);
-        if (dy > yl) yl = dy;
-        if (dy > yr) yr = dy;
+        if (deck.exact || dy > yl) yl = dy;
+        if (deck.exact || dy > yr) yr = dy;
       }
       pos.push3(lx, yl, lz);
       pos.push3(rx, yr, rz);

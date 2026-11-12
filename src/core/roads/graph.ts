@@ -234,7 +234,8 @@ export class Graph {
     const l1 = this.len(i1);
     const l2 = this.len(i2);
     const main = l1 >= l2 ? c1 : c2;
-    const at: Attr = { ...main.at, name: main.at.name ?? (main === c1 ? c2 : c1).at.name };
+    const other = (main === c1 ? c2 : c1).at;
+    const at: Attr = { ...main.at, name: main.at.name ?? other.name, ref: main.at.ref ?? other.ref };
     const pts = [...first, ...second.slice(1)];
     const imp = Math.max(c1.imp, c2.imp);
     this.removeChain(i1);
@@ -266,6 +267,9 @@ export class Graph {
 
 // ---------------------------------------------------------------- construction
 
+/** ends of the same road closer than this are joined (vector tile seams) */
+const SEAM_SNAP = 3;
+
 export function buildGraph(ways: PWay[]): Graph {
   // 1. snap endpoints onto other ways' vertices closer than 1 m (vector tile cuts)
   const pg = new PointGrid(4);
@@ -283,14 +287,21 @@ export function buildGraph(ways: PWay[]): Graph {
       let bestScore = Infinity;
       let best = -1;
       let exact = false;
-      pg.near(p[0], p[1], 1.0, (id, d) => {
+      pg.near(p[0], p[1], SEAM_SNAP, (id, d) => {
         if (refW[id] === wi) return;
         if (d < 1e-6) {
           exact = true;
           return;
         }
-        const ow = ways[refW[id]].pts;
-        const isEnd = refI[id] === 0 || refI[id] === ow.length - 1;
+        const o = ways[refW[id]];
+        const ow = o.pts;
+        const oStart = refI[id] === 0;
+        const isEnd = oStart || refI[id] === ow.length - 1;
+        if (d > 1.0) {
+          // tile seams: only ends of the same kind of road, continuing in the same direction
+          if (!isEnd || o.at.cls !== w.at.cls || levelKey(o.at) !== levelKey(w.at)) return;
+          if (w.at.oneway && o.at.oneway && (end === 0) === oStart) return;
+        }
         const score = d - (isEnd ? 0.3 : 0);
         if (score < bestScore) {
           bestScore = score;

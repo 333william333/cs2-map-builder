@@ -1,7 +1,9 @@
 /**
  * Smoke test of the OpenFreeMap vector tile loader against the real service.
- * Run once: npx tsx scripts/smoke-vectortiles.ts
- * Also writes exports/uppsala-vectors.json ({ vectors, scale }) for other scripts.
+ * Run once: npx tsx scripts/smoke-vectortiles.ts [name lat lon sizeMeters]
+ * Writes exports/<name>-vectors.json ({ ...vectors, scale }) for other scripts (default: Uppsala).
+ * Areas used for the road report: uppsala (default), bergen 60.3943 5.3259 14336,
+ * stockholm60 59.33 18.06 60000, frankfurt 50.0537 8.5856 14336 (motorway interchanges).
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createFrame } from '../src/core/geo/frame';
@@ -21,8 +23,12 @@ const nodeFetch: FetchBytes = async (url, opts) => {
 };
 
 async function main() {
-  const frame = createFrame(DEFAULT_SELECTION);
-  console.log(`Selection: Uppsala ${DEFAULT_SELECTION.sizeMeters} m, scale ${frame.scale}`);
+  const [name = 'uppsala', lat, lon, size] = process.argv.slice(2);
+  const sel = lat
+    ? { ...DEFAULT_SELECTION, centerLat: Number(lat), centerLon: Number(lon), sizeMeters: Number(size ?? 14336) }
+    : DEFAULT_SELECTION;
+  const frame = createFrame(sel);
+  console.log(`Selection: ${name} ${sel.sizeMeters} m, scale ${frame.scale}`);
   const t0 = Date.now();
   const { data, info } = await loadVectorsFromTilesDetailed(frame, DEFAULT_SETTINGS, nodeFetch, (_s, f, m) => {
     if (m && Math.round(f * 100) % 25 === 0) console.log(`  ${(f * 100).toFixed(0)}% ${m}`);
@@ -47,8 +53,8 @@ async function main() {
   console.log('seen polygon/water classes:', info.seenClasses);
 
   mkdirSync('exports', { recursive: true });
-  writeFileSync('exports/uppsala-vectors.json', JSON.stringify({ ...data, scale: 1 }));
-  console.log('\nwrote exports/uppsala-vectors.json');
+  writeFileSync(`exports/${name}-vectors.json`, JSON.stringify({ ...data, scale: frame.scale }));
+  console.log(`\nwrote exports/${name}-vectors.json`);
 }
 
 main().catch((e) => {

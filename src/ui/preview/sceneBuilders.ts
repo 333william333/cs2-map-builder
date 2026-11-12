@@ -5,17 +5,22 @@
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { CS2, type BuildResult, type OutsideConnection, type RoadClass, type RoadNode } from '../../core/types';
+import { CS2, type BuildResult, type OutsideConnection, type RoadClass } from '../../core/types';
+import { downsampleMean, waterGrids, type LevelGrid } from './gameWater';
 import type { Atmosphere } from './atmosphere';
-import { bridgeStructures, hash01, houseInstances, type BridgeInput } from './instances';
+import { bridgeStructures, houseInstances, treeLook, type TreeLook } from './instances';
+import { buildRoadScene, ROAD_SURFACE_LIFT, type Portal, type RoadScene } from './roadNetwork';
 import {
-  emptyTexture,
   heightUniforms,
   makeHouseMaterial,
   makeLitMaterial,
   makeRoadMaterial,
+  makeTunnelMaterial,
+  meshGroundHeight,
   makeTerrainMaterial,
   makeWaterMaterial,
+  cellGroundHeight,
+  floatTexture,
   makeZoneMaterial,
   vertexGridTexture,
   weightsTexture,
@@ -182,6 +187,8 @@ export interface BuildCtx {
   gpu: GpuShared;
   /** 2 tan(fov/2) / viewport height in px: world metres per pixel per metre of distance */
   pxScale: THREE.IUniform<number>;
+  /** 1 tints the quick preview ground by land cover (reference only) */
+  landcover?: THREE.IUniform<number>;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -189,6 +196,7 @@ export interface BuildCtx {
 export function disposeObject(o: THREE.Object3D | null | undefined): void {
   if (!o) return;
   o.traverse((c) => {
+    for (const t of (c.userData.textures as THREE.Texture[] | undefined) ?? []) t.dispose();
     const m = c as THREE.Mesh;
     if (m.geometry) m.geometry.dispose();
     const mat = m.material as THREE.Material | THREE.Material[] | undefined;
@@ -237,6 +245,7 @@ export function buildTerrainMesh(ctx: BuildCtx): THREE.Mesh {
     weightsSize: p.weights.size,
     playExtent: p.result.terrain.playable.extentM,
     snowLine: p.snowLine,
+    landcover: ctx.landcover,
     key: 'play',
   });
   const mesh = new THREE.Mesh(terrainGeometry(p.playV, p.playN, p.playInfo, idx), mat);
@@ -311,8 +320,104 @@ function waterGeometry(v: VertexGrid, level: Float32Array, depth: Float32Array, 
 }
 
 /** Local water over the playable area (sea, lakes, rivers) plus the sea over the world backdrop. */
+/** Mesh over a level grid: vertices at cell centres, the outer ring snapped to the grid edge. */
+export function levelGridGeometry(grid: LevelGrid, depthOf?: (x: number, z: number, level: number) => number): THREE.BufferGeometry | null {
+  const { n, extentM: E } = grid;
+  const L = grid.level;
+  const cell = E / n;
+  const coord = (i: number): number => (i === 0 ? -E / 2 : i === n - 1 ? E / 2 : -E / 2 + (i + 0.5) * cell);
+  const idx: number[] = [];
+  for (let r = 0; r < n - 1; r++) {
+    for (let c = 0; c < n - 1; c++) {
+      const i = r * n + c;
+      if (L[i] !== L[i] || L[i + 1] !== L[i + 1] || L[i + n] !== L[i + n] || L[i + n + 1] !== L[i + n + 1]) continue;
+      idx.push(i, i + n, i + 1, i + 1, i + n, i + n + 1);
+    }
+  }
+  if (idx.length === 0) return null;
+  const pos = new Float32Array(n * n * 3);
+  const depth = new Float32Array(n * n);
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const i = r * n + c;
+      const x = coord(c);
+      const z = coord(r);
+      const lv = L[i] === L[i] ? L[i] : 0;
+      pos[i * 3] = x;
+      pos[i * 3 + 1] = lv;
+      pos[i * 3 + 2] = z;
+      depth[i] = depthOf && L[i] === L[i] ? depthOf(x, z, lv) : 0;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aDepth', new THREE.BufferAttribute(depth, 1));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/**
+ * Water from the build's own per-cell levels (newer builds): one sea surface over playable and
+ * world alike, and lakes / rivers that continue across the playable border at the same level.
+ */
+function buildWaterFromFields(ctx: BuildCtx, hq: boolean): THREE.Group {
+  const { p } = ctx;
+  const t = p.result.terrain;
+  const group = new THREE.Group();
+  group.name = 'water';
+  const ph = t.playable.extentM / 2;
+  const wHalf = t.world.extentM / 2;
+  const fade: [number, number] = [wHalf * 0.45, wHalf * 0.96];
+  const grids = waterGrids(t, p.result.waterSources, 1024, 512);
+  // shorelines from the full-resolution grids, so they are as crisp as in the game view
+  const ps = Math.min(2048, t.playable.size);
+  const ws = Math.min(1024, t.world.size);
+  const playTex = floatTexture(downsampleMean(t.playable.data, t.playable.size, ps), ps);
+  const worldTex = floatTexture(downsampleMean(t.world.data, t.world.size, ws), ws);
+  group.userData.textures = [playTex, worldTex];
+  const ground = cellGroundHeight(playTex, ps, t.playable.extentM, worldTex, ws, t.world.extentM);
+  if (t.hasSea) {
+    const w = p.worldV;
+    const n = w.n;
+    const sea = p.seaLevel;
+    const h = w.data;
+    const idx = buildGridIndices(n, (r, c) => {
+      const i = r * n + c;
+      return !(h[i] < sea + 2 || h[i + 1] < sea + 2 || h[i + n] < sea + 2 || h[i + n + 1] < sea + 2);
+    });
+    if (idx.length > 0) {
+      const level = new Float32Array(n * n).fill(sea);
+      const depth = new Float32Array(n * n);
+      for (let i = 0; i < n * n; i++) depth[i] = sea - h[i];
+      const m = new THREE.Mesh(waterGeometry(w, level, depth, idx), makeWaterMaterial(ctx.atm, ground, { hq, edgeFade: fade }));
+      m.renderOrder = 2;
+      m.frustumCulled = false;
+      group.add(m);
+    }
+  }
+  const play = levelGridGeometry(grids.play);
+  if (play) {
+    const m = new THREE.Mesh(play, makeWaterMaterial(ctx.atm, ground, { hq, clipOutside: ph }));
+    m.renderOrder = 2;
+    m.frustumCulled = false;
+    group.add(m);
+  }
+  if (grids.world) {
+    const wg = levelGridGeometry(grids.world);
+    if (wg) {
+      const m = new THREE.Mesh(wg, makeWaterMaterial(ctx.atm, ground, { hq, edgeFade: fade, clipInside: ph }));
+      m.renderOrder = 2;
+      m.frustumCulled = false;
+      group.add(m);
+    }
+  }
+  return group;
+}
+
 export function buildWater(ctx: BuildCtx, hq = false): THREE.Group {
   const { p } = ctx;
+  if (p.result.terrain.waterLevel) return buildWaterFromFields(ctx, hq);
   const group = new THREE.Group();
   group.name = 'water';
 
@@ -322,7 +427,7 @@ export function buildWater(ctx: BuildCtx, hq = false): THREE.Group {
     if (idx.length > 0) {
       const mesh = new THREE.Mesh(
         waterGeometry(v, p.surface.level, p.playDepth, idx),
-        makeWaterMaterial(ctx.atm, ctx.gpu.height, { hq }),
+        makeWaterMaterial(ctx.atm, meshGroundHeight(ctx.gpu.height), { hq }),
       );
       mesh.renderOrder = 2;
       mesh.frustumCulled = false;
@@ -388,103 +493,143 @@ function roadGeometry(geo: RibbonGeometry): THREE.BufferGeometry {
   return g;
 }
 
-interface RoadInputs {
-  ribbons: RibbonInput[];
-  bridges: BridgeInput[];
+export interface RoadGroupOptions {
+  maxStep?: number;
+  keep?: (x: number, z: number) => boolean;
+  key?: string;
 }
 
-export function collectRoadInputs(p: Prepared, keep?: (x: number, z: number) => boolean): RoadInputs {
-  const r = p.result;
-  const heightAt = p.groundAt;
-  const ribbons: RibbonInput[] = [];
-  const bridges: BridgeInput[] = [];
-  if (r.roads && r.roads.edges.length > 0) {
-    const nodes = new Map<number, RoadNode>();
-    for (const nd of r.roads.nodes) nodes.set(nd.id, nd);
-    for (const e of r.roads.edges) {
-      if (e.tunnel || e.cls === 'subway' || e.pts.length < 2) continue;
-      if (keep) {
-        const m = e.pts[Math.floor(e.pts.length / 2)];
-        if (!keep(m[0], -m[1]) && !keep(e.pts[0][0], -e.pts[0][1])) continue;
-      }
-      const input: RibbonInput = { pts: e.pts, style: roadRibbonStyle(e.cls, e.prefab) };
-      if (e.bridge) {
-        const a = nodes.get(e.a);
-        const b = nodes.get(e.b);
-        const ea = a ? Math.max(0, a.elevation) : 0;
-        const eb = b ? Math.max(0, b.elevation) : 0;
-        const y0 = (a ? a.ground : heightAt(e.pts[0][0], -e.pts[0][1])) + ea;
-        const last = e.pts[e.pts.length - 1];
-        const y1 = (b ? b.ground : heightAt(last[0], -last[1])) + eb;
-        const hump = ea === 0 && eb === 0 ? 6 : 0;
-        input.deck = { y0: y0 + 0.4, y1: y1 + 0.4, hump };
-        bridges.push({ pts: e.pts, y0: y0 + 0.4, y1: y1 + 0.4, hump, width: input.style.width });
-      }
-      ribbons.push(input);
-    }
-  } else if (r.vectors && r.vectors.ways.length > 0) {
-    for (const w of r.vectors.ways) {
+/** Portal frames (two walls and a lintel) where roads enter the ground. */
+function portalGeometry(portals: Portal[]): THREE.BufferGeometry | null {
+  if (portals.length === 0) return null;
+  const parts: THREE.BufferGeometry[] = [];
+  for (const pt of portals) {
+    const w = pt.width + 3;
+    const hgt = 7.5;
+    const t = 1.6;
+    const yaw = Math.atan2(pt.dx, pt.dz);
+    const add = (sx: number, sy: number, sz: number, ox: number, oy: number): void => {
+      const g = new THREE.BoxGeometry(sx, sy, sz);
+      g.translate(ox, oy, 0);
+      g.rotateY(yaw);
+      g.translate(pt.x, pt.y, pt.z);
+      g.deleteAttribute('uv');
+      parts.push(g);
+    };
+    add(t, hgt, 3, -w / 2, hgt / 2 - 1);
+    add(t, hgt, 3, w / 2, hgt / 2 - 1);
+    add(w + t, 1.8, 3.2, 0, hgt - 0.1);
+  }
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((g) => g.dispose());
+  return merged;
+}
+
+function attrGeometry(positions: Float32Array, uvs: Float32Array, params: Float32Array, count: number): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const normals = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) normals[i * 3 + 1] = 1;
+  g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  g.setAttribute('aRoadUv', new THREE.BufferAttribute(uvs, 2));
+  g.setAttribute('aRoadP', new THREE.BufferAttribute(params, 4));
+  g.setAttribute('aCenterOff', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/**
+ * Roads of a network as drawable pieces: ribbons trimmed at junctions, one junction surface per
+ * node, bridge girders and piers, tunnel portals and (child named 'tunnels') dashed guides along
+ * underground stretches. Falls back to raw OSM ways when there is no processed network.
+ */
+export function buildRoadGroup(
+  result: BuildResult,
+  heightAt: (x: number, z: number) => number,
+  atm: Atmosphere,
+  pxScale: THREE.IUniform<number>,
+  opts: RoadGroupOptions = {},
+): { group: THREE.Group; scene: RoadScene | null } | null {
+  let scene: RoadScene | null = null;
+  let ribbons: RibbonInput[] = [];
+  if (result.roads && result.roads.edges.length > 0) {
+    scene = buildRoadScene(result.roads, heightAt, { keep: opts.keep });
+    ribbons = scene.ribbons;
+  } else if (result.vectors && result.vectors.ways.length > 0) {
+    for (const w of result.vectors.ways) {
       if (w.tunnel || w.cls === 'subway' || w.pts.length < 2) continue;
-      ribbons.push({ pts: w.pts, style: roadRibbonStyle(w.cls as RoadClass, CLASS_PREFAB[w.cls as RoadClass]) });
+      const st = roadRibbonStyle(w.cls as RoadClass, CLASS_PREFAB[w.cls as RoadClass]);
+      st.lift = ROAD_SURFACE_LIFT;
+      ribbons.push({ pts: w.pts, style: st });
     }
   }
-  return { ribbons, bridges };
-}
-
-export function buildRoads(ctx: BuildCtx, opts: { maxStep?: number; keep?: (x: number, z: number) => boolean; key?: string } = {}): THREE.Group | null {
-  const { p } = ctx;
-  const { ribbons, bridges } = collectRoadInputs(p, opts.keep);
   if (ribbons.length === 0) return null;
   const group = new THREE.Group();
   group.name = 'roads';
-  const geo = buildRibbons(ribbons, p.groundAt, { maxStep: opts.maxStep ?? 24 });
+  const key = opts.key ?? 'road';
+  const roadMat = makeRoadMaterial(atm, pxScale, key);
+  const geo = buildRibbons(ribbons, heightAt, { maxStep: opts.maxStep ?? 24 });
   if (geo.vertexCount > 0) {
-    const mesh = new THREE.Mesh(roadGeometry(geo), makeRoadMaterial(ctx.atm, ctx.pxScale, opts.key ?? 'road'));
+    const mesh = new THREE.Mesh(roadGeometry(geo), roadMat);
     mesh.frustumCulled = false;
     mesh.receiveShadow = true;
     mesh.renderOrder = 1;
     group.add(mesh);
   }
-  if (bridges.length > 0) {
-    const md = bridgeStructures(bridges, p.groundAt);
+  if (scene && scene.junctions.vertexCount > 0) {
+    const j = scene.junctions;
+    const m = new THREE.Mesh(attrGeometry(j.positions, j.uvs, j.params, j.vertexCount), makeRoadMaterial(atm, pxScale, key));
+    m.frustumCulled = false;
+    m.receiveShadow = true;
+    m.renderOrder = 1;
+    m.name = 'junctions';
+    group.add(m);
+  }
+  if (scene && scene.bridges.length > 0) {
+    const md = bridgeStructures(scene.bridges, heightAt);
     if (md.indices.length > 0) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(md.positions, 3));
       g.setAttribute('normal', new THREE.BufferAttribute(md.normals, 3));
       g.setIndex(new THREE.BufferAttribute(md.indices, 1));
       g.computeBoundingSphere();
-      const m = new THREE.Mesh(g, makeLitMaterial(ctx.atm, 'bridge', { color: 0x9a9893 }));
+      const m = new THREE.Mesh(g, makeLitMaterial(atm, `bridge-${key}`, { color: 0x9a9893 }));
       m.castShadow = true;
       m.receiveShadow = true;
       m.name = 'bridges';
       group.add(m);
     }
   }
-  return group;
+  const pg = scene ? portalGeometry(scene.portals) : null;
+  if (pg) {
+    const m = new THREE.Mesh(pg, makeLitMaterial(atm, `portal-${key}`, { color: 0xa3a19b }));
+    m.castShadow = true;
+    m.receiveShadow = true;
+    m.name = 'portals';
+    group.add(m);
+  }
+  if (scene && scene.underground.length > 0) {
+    const inputs: RibbonInput[] = scene.underground.map((u) => ({
+      pts: u.pts,
+      style: { width: u.width * 0.5, color: [1, 1, 1] as const, lift: 0.8, params: [u.width / 4, 0, 0, 0] as const },
+    }));
+    const tg = buildRibbons(inputs, heightAt, { maxStep: opts.maxStep ?? 24 });
+    if (tg.vertexCount > 0) {
+      const m = new THREE.Mesh(roadGeometry(tg), makeTunnelMaterial(atm, pxScale));
+      m.frustumCulled = false;
+      m.renderOrder = 4;
+      m.name = 'tunnels';
+      group.add(m);
+    }
+  }
+  return { group, scene };
+}
+
+export function buildRoads(ctx: BuildCtx, opts: RoadGroupOptions = {}): THREE.Group | null {
+  return buildRoadGroup(ctx.p.result, ctx.p.groundAt, ctx.atm, ctx.pxScale, opts)?.group ?? null;
 }
 
 // ---------------------------------------------------------------- trees
-
-const CONIFERS = new Set(['pine', 'spruce']);
-const AGE_SCALE = [0.45, 0.72, 1, 1.12, 0.9];
-
-function speciesColor(sp: string): [number, number, number] {
-  switch (sp) {
-    case 'pine': return hexToLinear(0x405f35);
-    case 'spruce': return hexToLinear(0x2f4c32);
-    case 'birch': return hexToLinear(0x7a9a45);
-    case 'oak': return hexToLinear(0x4d7535);
-    case 'linden': return hexToLinear(0x5a8238);
-    case 'chestnut': return hexToLinear(0x4a7232);
-    case 'poplar': return hexToLinear(0x6e9440);
-    case 'alder': return hexToLinear(0x4a6e37);
-    case 'apple': return hexToLinear(0x648c3e);
-    case 'bush': return hexToLinear(0x5d7a3b);
-    case 'palm': return hexToLinear(0x5c8a40);
-    case 'eucalyptus': return hexToLinear(0x6c8a70);
-    default: return hexToLinear(0x557d3a);
-  }
-}
 
 /** Gives a geometry a vertical colour gradient (dark bottom, light top) for cheap crown shading. */
 function shadeVertical(g: THREE.BufferGeometry, y0: number, y1: number, dark: number, light: number, tint?: [number, number, number]): THREE.BufferGeometry {
@@ -589,7 +734,8 @@ export function buildTrees(ctx: BuildCtx, opts: TreeBuildOptions = {}): THREE.Gr
     const c = Math.round((x + v.extentM / 2) / dv);
     const r = Math.round((z + v.extentM / 2) / dv);
     if (c >= 0 && r >= 0 && c < v.n && r < v.n && wet[r * v.n + c] && p.playDepth[r * v.n + c] > 0.4) continue;
-    const con = CONIFERS.has(trees.speciesTable[trees.species[i]]) ? 0 : 1;
+    const sp = trees.speciesTable[trees.species[i]];
+    const con = sp === 'pine' || sp === 'spruce' ? 0 : 1;
     let hq = !!opts.hq;
     if (hq && opts.near && nd2 > 0) {
       const dx = x - opts.near.x, dz = z - opts.near.z;
@@ -600,7 +746,7 @@ export function buildTrees(ctx: BuildCtx, opts: TreeBuildOptions = {}): THREE.Gr
 
   const group = new THREE.Group();
   group.name = 'trees';
-  const dead = hexToLinear(0x7a6a55);
+  const look: TreeLook = { conifer: false, radius: 0, height: 0, rot: 0, r: 0, g: 0, b: 0 };
   const make = (indices: number[], conifer: boolean, hq: boolean): void => {
     if (indices.length === 0) return;
     const geo = treeGeometry(conifer ? 'conifer' : 'broadleaf', hq);
@@ -612,37 +758,19 @@ export function buildTrees(ctx: BuildCtx, opts: TreeBuildOptions = {}): THREE.Gr
       const i = indices[k];
       const x = trees.xz[i * 2];
       const z = -trees.xz[i * 2 + 1];
-      const sp = trees.speciesTable[trees.species[i]];
-      const age = trees.age[i];
-      const rnd = hash01(i);
-      const a = (AGE_SCALE[age] ?? 1) * (0.85 + 0.3 * rnd);
-      const bush = sp === 'bush';
-      let rad: number, hgt: number;
-      if (conifer) {
-        hgt = 19 * a * (0.9 + 0.2 * hash01(i * 7 + 3));
-        rad = 3.4 * a;
-      } else if (bush) {
-        hgt = 2.6 * a;
-        rad = 1.8 * a;
-      } else {
-        hgt = (sp === 'poplar' ? 19 : sp === 'birch' ? 15 : 14) * a;
-        rad = (sp === 'poplar' ? 3.2 : sp === 'birch' ? 3.8 : 5.0) * a;
-      }
-      const rot = hash01(i * 11 + 1) * Math.PI * 2;
-      const cs = Math.cos(rot), sn = Math.sin(rot);
+      treeLook(trees.speciesTable[trees.species[i]], trees.age[i], i, look);
+      const rad = look.radius;
+      const hgt = look.height;
+      const cs = Math.cos(look.rot), sn = Math.sin(look.rot);
       const y = p.groundAt(x, z) - 0.3;
       const o = k * 16;
       m[o] = rad * cs; m[o + 1] = 0; m[o + 2] = -rad * sn; m[o + 3] = 0;
       m[o + 4] = 0; m[o + 5] = hgt; m[o + 6] = 0; m[o + 7] = 0;
       m[o + 8] = rad * sn; m[o + 9] = 0; m[o + 10] = rad * cs; m[o + 11] = 0;
       m[o + 12] = x; m[o + 13] = y; m[o + 14] = z; m[o + 15] = 1;
-      const base = age === 4 ? dead : speciesColor(sp);
-      const lum = 0.78 + 0.4 * hash01(i * 13 + 5);
-      const hue = (hash01(i * 17 + 9) - 0.5) * 0.18;
-      const young = age === 0 ? 0.12 : 0;
-      col[k * 3] = Math.min(1, (base[0] * (1 + hue) + young * 0.2) * lum);
-      col[k * 3 + 1] = Math.min(1, (base[1] + young * 0.25) * lum);
-      col[k * 3 + 2] = Math.min(1, base[2] * (1 - hue) * lum);
+      col[k * 3] = look.r;
+      col[k * 3 + 1] = look.g;
+      col[k * 3 + 2] = look.b;
     }
     mesh.instanceColor = new THREE.InstancedBufferAttribute(col, 3);
     mesh.instanceMatrix.needsUpdate = true;

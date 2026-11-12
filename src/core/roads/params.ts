@@ -82,6 +82,8 @@ export interface Attr {
   roundabout: boolean;
   lanes?: number;
   name?: string;
+  ref?: string;
+  unpaved?: boolean;
   /** produced by merging two carriageways / tracks */
   merged: boolean;
   /** source way id (for deterministic tie-breaks) */
@@ -90,6 +92,8 @@ export interface Attr {
 
 export function choosePrefab(a: Attr): NetPrefab {
   const L = a.lanes;
+  // unpaved minor roads (tracks, gravel) are gravel roads in the game
+  if (a.unpaved && !a.oneway && (a.cls === 'tertiary' || a.cls === 'residential' || a.cls === 'service')) return 'road_gravel';
   const tot = L ?? (a.merged ? 4 : 2);
   switch (a.cls) {
     case 'motorway':

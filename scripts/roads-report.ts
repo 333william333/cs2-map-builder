@@ -8,7 +8,8 @@
  * mask), so water bridges are not exercised here.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { buildRoads, lastBuildRoadsStats, validateNetwork } from '../src/core/roads/buildRoads';
+import { buildRoads, buildRoadsTraced, lastBuildRoadsStats, validateNetwork } from '../src/core/roads/buildRoads';
+import { checkContinuity } from '../src/core/roads/continuity';
 import { CLASS_ORDER } from '../src/core/roads/params';
 import {
   ALL_ROAD_CLASSES, DEFAULT_SETTINGS, type RoadClass, type RoadSettings, type TerrainResult, type VectorData,
@@ -126,6 +127,57 @@ console.log(`repair: ${lastBuildRoadsStats()?.droppedEdges} edges dropped in ${l
 console.log(`\nviolations: ${violations.length}`);
 for (const v of violations.slice(0, 50)) console.log('  ' + v);
 if (violations.length > 50) console.log(`  ... ${violations.length - 50} more`);
+
+// continuity (traced second run for stage attribution)
+const traced = buildRoadsTraced(vectors, terrain, settings);
+const cont = checkContinuity(vectors, traced.net, settings, traced.snapshots);
+console.log('\ncontinuity    in km  expect km   out km  missing km  breaks  named in/out km');
+for (const [c, v] of Object.entries(cont.classes)) {
+  if (!v) continue;
+  console.log(`${c.padEnd(12)} ${v.inKm.toFixed(1).padStart(6)} ${v.expectedKm.toFixed(1).padStart(10)} ${v.outKm.toFixed(1).padStart(8)} ${v.missingKm.toFixed(2).padStart(11)} ${String(v.breaks).padStart(7)}   ${v.namedInKm.toFixed(1)}/${v.namedOutKm.toFixed(1)}`);
+}
+console.log(`components in ${cont.inComponents} out ${cont.outComponents}; dead ends in ${cont.inDeadEnds} out ${cont.outDeadEnds}; named share in ${(cont.namedInShare * 100).toFixed(1)}% out ${(cont.namedOutShare * 100).toFixed(1)}%`);
+const byStage = new Map<string, number>();
+for (const b of cont.breaks) {
+  const k = `${b.cls}/${b.kind}/${b.stage ?? '?'}`;
+  byStage.set(k, (byStage.get(k) ?? 0) + 1);
+}
+console.log('breaks by class/kind/stage: ' + [...byStage.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', '));
+const st = lastBuildRoadsStats();
+const rb = st?.roundabouts;
+if (rb) console.log(`roundabouts: ${rb.found} rings (${rb.detected} detected from geometry), kept ${rb.kept}, enlarged ${rb.kept !== undefined ? rb.enlarged : 0}, collapsed ${rb.collapsed}`);
+const insideKm = (pts: [number, number][]) => {
+  let s = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (Math.max(Math.abs(a[0]), Math.abs(a[1]), Math.abs(b[0]), Math.abs(b[1])) <= H) s += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return s / 1000;
+};
+const kept = (w: { cls: RoadClass }) => settings.classes[w.cls];
+const sIn = { bridge: [0, 0], tunnel: [0, 0] };
+for (const w of vectors.ways) {
+  if (!kept(w)) continue;
+  const k = insideKm(w.pts);
+  if (k <= 0) continue;
+  if (w.bridge) { sIn.bridge[0]++; sIn.bridge[1] += k; }
+  if (w.tunnel) { sIn.tunnel[0]++; sIn.tunnel[1] += k; }
+}
+const sOut = { bridge: 0, tunnel: 0 };
+for (const e of traced.net.edges) {
+  if (e.bridge) sOut.bridge += lenOf(e.pts) / 1000;
+  if (e.tunnel) sOut.tunnel += lenOf(e.pts) / 1000;
+}
+console.log(`bridges in ${sIn.bridge[0]} ways ${sIn.bridge[1].toFixed(2)} km, out ${sOut.bridge.toFixed(2)} km; tunnels in ${sIn.tunnel[0]} ways ${sIn.tunnel[1].toFixed(2)} km, out ${sOut.tunnel.toFixed(2)} km; structure transitions fixed ${st?.structureFixes ?? 0}`);
+const log = st?.repairLog ?? [];
+const kinds = new Map<string, number>();
+for (const l of log) { const k = l.split(' @')[0]; kinds.set(k, (kinds.get(k) ?? 0) + 1); }
+console.log('repair actions: ' + [...kinds.entries()].map(([k, v]) => `${k} ${v}`).join(', '));
+const major = new Set(['motorway', 'trunk', 'primary', 'secondary', 'rail']);
+for (const b of cont.breaks.filter((x) => major.has(x.cls)).slice(0, Number(arg('--show') ?? 25))) {
+  console.log(`  ${b.cls} ${b.kind} at ${b.p[0].toFixed(0)},${b.p[1].toFixed(0)} len ${b.len.toFixed(0)} stage ${b.stage ?? '?'}${b.name ? ' ' + b.name : ''}`);
+}
 
 const out = arg('--out');
 if (out) {

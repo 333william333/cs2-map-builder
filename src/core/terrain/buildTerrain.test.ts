@@ -11,6 +11,8 @@ import {
 import { buildTerrain, chooseHeightScale, type TerrainInput } from './buildTerrain';
 import { downsampleArea } from './filters';
 import { centreRegion } from './world';
+import { seamMetrics } from './seam';
+import type { WorldWater } from '../data/worldWater';
 
 const SEL = { centerLat: 59.85, centerLon: 17.64, sizeMeters: 14336, rotationDeg: 0 };
 
@@ -222,5 +224,106 @@ describe('world map consistency', () => {
       seam = Math.max(seam, Math.abs(res.world.data[r * Nw + lo] - res.world.data[r * Nw + lo - 1]));
     }
     expect(seam).toBeLessThan(10);
+  });
+});
+
+describe('water across the playable border', () => {
+  const circle = (cx: number, cz: number, rad: number, k = 64): Pt[] => {
+    const ring: Pt[] = [];
+    for (let q = 0; q < k; q++) {
+      const a = (q / k) * Math.PI * 2;
+      ring.push([cx + rad * Math.cos(a), cz + rad * Math.sin(a)]);
+    }
+    return ring;
+  };
+  const world = (patch: Partial<WorldWater>): WorldWater => ({ waterPolygons: [], waterways: [], zoom: 10, tiles: 1, ...patch });
+  const worldRowCells = (Nw: number, gz: number) => Math.floor(((CS2.WORLD_SIZE_M / 2 - gz) / CS2.WORLD_SIZE_M) * Nw);
+
+  it('gives a lake cut by the border one level on both grids and continues it outside', () => {
+    const frame = createFrame(SEL);
+    const bumpy = (x: number, y: number) => 300 + 0.002 * x + 3 * Math.sin(x / 400) * Math.cos(y / 350);
+    const detail = vectors({ waterPolygons: [{ kind: 'lake', rings: [circle(7168, 0, 2500)] }] });
+    const coarse = world({ waterPolygons: [{ kind: 'lake', rings: [circle(7180, 10, 2490, 24)] }] });
+    const res = buildTerrain({ ...input(frame, bumpy, { verticalMode: 'true', carveWater: true }, detail), worldWater: coarse });
+    const lv = res.waterLevel!, wlv = res.worldWaterLevel!, wm = res.worldWaterMask!;
+    const levels = new Set<number>();
+    for (let i = 0; i < res.waterMask.length; i++) if (res.waterMask[i] === 2) levels.add(Math.round(lv[i] * 1000));
+    expect(levels.size).toBe(1);
+    const level = [...levels][0] / 1000;
+    const Nw = res.world.size;
+    const { hi } = centreRegion(Nw);
+    const r = worldRowCells(Nw, 0);
+    // just outside the right border the lake continues with the same surface
+    for (const c of [hi, hi + 2, hi + 5]) {
+      expect(wm[r * Nw + c]).toBe(2);
+      expect(wlv[r * Nw + c]).toBeCloseTo(level, 3);
+      expect(res.world.data[r * Nw + c]).toBeLessThan(level);
+    }
+    const seam = seamMetrics(res);
+    expect(seam.water.n).toBeGreaterThan(5);
+    expect(seam.water.maxJump).toBeLessThan(2);
+    expect(seam.mixed).toBeLessThanOrEqual(seam.mixedBaseline + 2);
+  });
+
+  it('keeps a river crossing the border on one falling surface on both grids', () => {
+    const frame = createFrame(SEL);
+    const slope = (x: number, y: number) => 300 - 0.004 * x + 3 * Math.sin(x / 150) + Math.cos(y / 300);
+    const line: Pt[] = [[-25000, 40], [-9000, -30], [0, 0], [9000, 30], [25000, -20]];
+    const detail = vectors({ waterways: [{ kind: 'river', widthM: 400, pts: line.slice(1, 4) }] });
+    const coarse = world({ waterways: [{ kind: 'river', widthM: 400, pts: line }] });
+    const res = buildTerrain({ ...input(frame, slope, { verticalMode: 'true', carveWater: true, smoothing: 0.3 }, detail), worldWater: coarse });
+    const Nw = res.world.size, wlv = res.worldWaterLevel!, wm = res.worldWaterMask!;
+    const r = worldRowCells(Nw, 0);
+    let prevL = Infinity, prevH = Infinity, count = 0;
+    // cells along the line from x = -24 km to +24 km, across both borders
+    const cell = CS2.WORLD_SIZE_M / Nw;
+    for (let c = Math.ceil((CS2.WORLD_SIZE_M / 2 - 24000) / cell); c < Nw - (CS2.WORLD_SIZE_M / 2 - 24000) / cell; c++) {
+      const i = r * Nw + c;
+      expect(wm[i]).toBe(3);
+      expect(wlv[i]).toBeLessThanOrEqual(prevL + 1e-3);
+      expect(res.world.data[i]).toBeLessThanOrEqual(prevH + 1);
+      prevL = wlv[i];
+      prevH = res.world.data[i];
+      count++;
+    }
+    expect(count).toBeGreaterThan(200);
+    expect(seamMetrics(res).water.maxJump).toBeLessThan(2);
+  });
+
+  it('classifies a coast crossing the border the same on both grids, trusting the outline offshore', () => {
+    const frame = createFrame(SEL);
+    // the DEM shows a flat +5 m "surface" over the sea (as some surface models do) west of x = -100
+    const coast = (x: number) => (x < -100 ? 5 : 5 + 0.01 * (x + 100));
+    const sea: Pt[] = [[-40000, -40000], [0, -40000], [0, 40000], [-40000, 40000]];
+    const res = buildTerrain({
+      ...input(frame, coast, { verticalMode: 'true', carveWater: true }, vectors({})),
+      worldWater: world({ waterPolygons: [{ kind: 'sea', rings: [sea] }] }),
+    });
+    expect(res.hasSea).toBe(true);
+    const { size: N, extentM: E } = res.playable;
+    for (let c = 0; c < N; c += 16) {
+      const [gx] = cellPos(N, E, 256, c);
+      if (gx < -200) {
+        expect(res.waterMask[256 * N + c]).toBe(1);
+        expect(res.playable.data[256 * N + c]).toBeLessThan(res.seaLevel);
+      }
+      if (gx > 100) expect(res.waterMask[256 * N + c]).toBe(0);
+    }
+    const Nw = res.world.size;
+    const { lo } = centreRegion(Nw);
+    expect(res.worldWaterMask![worldRowCells(Nw, 0) * Nw + lo - 3]).toBe(1);
+    const seam = seamMetrics(res);
+    expect(seam.mixed).toBeLessThanOrEqual(4);
+    expect(seam.water.maxJump).toBeLessThan(1);
+    expect(seam.land.maxJump).toBeLessThan(2);
+  });
+
+  it('has no step along the border on plain land', () => {
+    const frame = createFrame(SEL);
+    const hills = (x: number, y: number) => 120 + 30 * Math.sin(x / 2100) * Math.cos(y / 1700) + 0.003 * y;
+    const res = buildTerrain(input(frame, hills, { smoothing: 0.3 }));
+    const seam = seamMetrics(res);
+    expect(seam.mixed).toBe(0);
+    expect(seam.land.maxJump).toBeLessThan(Math.max(0.5, 2 * seam.land.maxBase));
   });
 });

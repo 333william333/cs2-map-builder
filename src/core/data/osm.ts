@@ -195,6 +195,8 @@ function assemblePolygons(outers: Pt[][], inners: Pt[][]): Pt[][][] {
 
 // ------------------------------------------------------------------ tag mapping
 
+const UNPAVED = new Set(['unpaved', 'gravel', 'fine_gravel', 'dirt', 'ground', 'earth', 'compacted', 'sand', 'grass', 'mud', 'pebblestone']);
+
 function highwayClass(v: string | undefined): { cls: RoadClass; link: boolean } | null {
   if (!v) return null;
   const link = v.endsWith('_link');
@@ -359,6 +361,9 @@ export function parseOverpass(json: { elements?: OsmElement[] }, frame: Frame, s
         };
         if (Number.isFinite(lanes) && lanes > 0) way.lanes = lanes;
         if (t.name && settings.roads.names) way.name = t.name;
+        if (t.ref && settings.roads.names) way.ref = t.ref;
+        if (t.surface && UNPAVED.has(t.surface)) way.unpaved = true;
+        else if (t.highway === 'track') way.unpaved = true;
         out.ways.push(way);
         continue;
       }

@@ -4,11 +4,11 @@
  */
 import type { NetPrefab, Pt, RoadClass } from '../types';
 import {
-  GEN_MAX_PIECE, GEN_MIN_PIECE, GEN_NODE_GAP, choosePrefab, clearance, maxPieceTurn, prefabIsOneway,
+  GEN_MAX_PIECE, GEN_MIN_PIECE, GEN_NODE_GAP, attrKey, choosePrefab, clearance, maxPieceTurn, minRadius, prefabIsOneway,
   targetPiece,
 } from './params';
 import {
-  type Bez, angleBetween, bezArcSample, bezLength, cumLen, dist, fitBezier, pointAt, unit, vertexTurns,
+  type Bez, angleBetween, bezArcSample, bezLength, bezMinRadius, cumLen, dist, fitBezier, pointAt, unit, vertexTurns,
 } from './geom';
 import type { Graph } from './graph';
 import { PointGrid } from './spatial';
@@ -31,11 +31,14 @@ export interface WEdge {
   tunnel: boolean;
   layer: number;
   name?: string;
+  ref?: string;
   bezier: Bez;
   pts: Pt[];
   chain: number;
   imp: number;
   alive: boolean;
+  /** geometry recomputed in this segmentation (not reused from the cache) */
+  fresh: boolean;
 }
 
 export interface WNet {
@@ -65,7 +68,13 @@ function endMinLength(g: Graph, id: number, n: number): number {
   return Math.min(GEN_MAX_PIECE, need);
 }
 
-export function segmentGraph(g: Graph): WNet {
+/** DP results per chain polyline, reused between repair rounds when nothing around changed */
+export type SegCache = WeakMap<Pt[], {
+  a: number; b: number; key: string; n: number; x0: number; z0: number; x1: number; z1: number;
+  cuts: number[]; pieces?: { bez: Bez; pts: Pt[] }[];
+}>;
+
+export function segmentGraph(g: Graph, avoid: Pt[] = [], cache?: SegCache): WNet {
   const nodes: WNode[] = [];
   const edges: WEdge[] = [];
   const map = new Map<number, number>();
@@ -87,6 +96,7 @@ export function segmentGraph(g: Graph): WNet {
       pg.add(n.x, n.z, map.get(i)!);
     }
   }
+  for (const p of avoid) pg.add(p[0], p[1], -1);
   const chainEnds = new Map<number, [number, number]>();
   const pairUsed = new Set<string>();
   const order = g.live().sort((a, b) => g.chains[b].imp - g.chains[a].imp);
@@ -110,11 +120,17 @@ export function segmentGraph(g: Graph): WNet {
     const target = Math.min(targetPiece(c.at.cls), maxLen);
     const tmax = maxPieceTurn(c.at.cls);
     // vertices too close to existing nodes cannot become joints
+    let badDone = false;
     const bad = new Uint8Array(pts.length);
-    for (let j = 1; j < m; j++) {
-      pg.near(pts[j][0], pts[j][1], GEN_NODE_GAP, () => { bad[j] = 1; });
-    }
-    const solve = (useBad: boolean, turnLim: number, fMin: number, lMin: number): number[] | null => {
+    const ensureBad = () => {
+      if (badDone) return;
+      badDone = true;
+      for (let j = 1; j < m; j++) {
+        pg.near(pts[j][0], pts[j][1], GEN_NODE_GAP, () => { bad[j] = 1; });
+      }
+    };
+    const solve = (useBad: boolean, turnLim: number, fMin: number, lMin: number, pMin = GEN_MIN_PIECE): number[] | null => {
+      if (useBad) ensureBad();
       const best = new Float64Array(pts.length).fill(Infinity);
       const prev = new Int32Array(pts.length).fill(-1);
       best[0] = 0;
@@ -124,7 +140,7 @@ export function segmentGraph(g: Graph): WNet {
           const len = cum[j] - cum[i];
           if (len > maxLen) break;
           if (best[i] === Infinity) continue;
-          let mn = GEN_MIN_PIECE;
+          let mn = pMin;
           if (i === 0) mn = Math.max(mn, fMin);
           if (j === m) mn = Math.max(mn, lMin);
           if (len < mn) continue;
@@ -146,13 +162,47 @@ export function segmentGraph(g: Graph): WNet {
       cuts.push(0);
       return cuts.reverse();
     };
-    let cuts =
+    const ckey = `${attrKey(c.at)}|${firstMin.toFixed(1)}|${lastMin.toFixed(1)}|${maxLen.toFixed(1)}`;
+    const ce = cache?.get(pts);
+    let cached: number[] | null = null;
+    if (
+      ce && ce.a === c.a && ce.b === c.b && ce.key === ckey && ce.n === pts.length &&
+      ce.x0 === pts[0][0] && ce.z0 === pts[0][1] && ce.x1 === pts[m][0] && ce.z1 === pts[m][1]
+    ) {
+      let ok = true;
+      for (let k = 1; k + 1 < ce.cuts.length && ok; k++) {
+        const q = pts[ce.cuts[k]];
+        pg.near(q[0], q[1], GEN_NODE_GAP, () => { ok = false; });
+      }
+      if (ok) cached = ce.cuts;
+    }
+    let cuts = cached ??
       solve(true, tmax, firstMin, lastMin) ??
       solve(true, Math.PI / 2, firstMin, lastMin) ??
+      solve(true, Math.PI / 2, firstMin, lastMin, 27) ??
       solve(false, Math.PI / 2, firstMin, lastMin) ??
       solve(false, Math.PI / 2, GEN_MIN_PIECE, GEN_MIN_PIECE) ??
-      solve(false, Math.PI, GEN_MIN_PIECE, GEN_MIN_PIECE);
-    if (!cuts) continue;
+      solve(false, Math.PI, GEN_MIN_PIECE, GEN_MIN_PIECE) ??
+      solve(false, Math.PI, 25, 25, 25);
+    if (!cuts) {
+      // never drop a chain: split evenly and let the repair loop fix what is wrong
+      const n = Math.max(loop ? 3 : 1, Math.ceil(L / GEN_MAX_PIECE));
+      const ev: number[] = [0];
+      for (let k = 1; k < n; k++) {
+        const s = (L * k) / n;
+        let j = ev[ev.length - 1] + 1;
+        while (j < m - 1 && cum[j] < s) j++;
+        if (j < m) ev.push(j);
+      }
+      ev.push(m);
+      cuts = [...new Set(ev)];
+      if (cuts.length < 2) continue;
+    }
+    const reuse = cached && ce?.pieces && ce.pieces.length === cuts.length - 1 ? ce.pieces : null;
+    const made: { bez: Bez; pts: Pt[] }[] = [];
+    if (cache && !cached) {
+      cache.set(pts, { a: c.a, b: c.b, key: ckey, n: pts.length, x0: pts[0][0], z0: pts[0][1], x1: pts[m][0], z1: pts[m][1], cuts, pieces: made });
+    }
     if (cuts.length === 2) {
       if (pairUsed.has(pk)) continue;
       pairUsed.add(pk);
@@ -196,12 +246,40 @@ export function segmentGraph(g: Graph): WNet {
       }
       const A = nodes[prevNode];
       const B = nodes[nb];
+      if (reuse) {
+        const r = reuse[k - 1];
+        edges.push({
+          a: prevNode, b: nb, cls: c.at.cls, prefab, oneway, bridge: c.at.bridge, tunnel: c.at.tunnel,
+          layer: c.at.layer, name: c.at.name ?? c.at.ref, ref: c.at.ref, bezier: r.bez, pts: r.pts,
+          chain: id, imp: c.imp, alive: true, fresh: false,
+        });
+        prevNode = nb;
+        continue;
+      }
       const piece = pts.slice(i, j + 1);
       piece[0] = [A.x, A.z];
       piece[piece.length - 1] = [B.x, B.z];
       let bez = fitBezier(piece, tanAt(i, 1), tanAt(j, -1));
       bez[0] = [A.x, A.z];
       bez[3] = [B.x, B.z];
+      // too tight somewhere: try other handle lengths, keep the gentlest that stays near the line
+      const rmin = minRadius(prefab) + 1.5;
+      if (bezMinRadius(bez, 24) < rmin) {
+        const d = dist(bez[0], bez[3]);
+        const t0 = tanAt(i, 1);
+        const t3 = tanAt(j, -1);
+        let bestR = bezMinRadius(bez, 24);
+        for (const f1 of [0.2, 0.28, 0.36, 0.45]) {
+          for (const f2 of [0.2, 0.28, 0.36, 0.45]) {
+            const cand: Bez = [bez[0], [bez[0][0] + t0[0] * d * f1, bez[0][1] + t0[1] * d * f1], [bez[3][0] - t3[0] * d * f2, bez[3][1] - t3[1] * d * f2], bez[3]];
+            const r = bezMinRadius(cand, 24);
+            if (r > bestR) {
+              bestR = r;
+              bez = cand;
+            }
+          }
+        }
+      }
       const bl = bezLength(bez);
       if (bl > 199 || bl < 24.5) {
         const d = dist(bez[0], bez[3]);
@@ -218,13 +296,16 @@ export function segmentGraph(g: Graph): WNet {
         bridge: c.at.bridge,
         tunnel: c.at.tunnel,
         layer: c.at.layer,
-        name: c.at.name,
+        name: c.at.name ?? c.at.ref,
+        ref: c.at.ref,
         bezier: bez,
         pts: bezArcSample(bez, 10),
         chain: id,
         imp: c.imp,
         alive: true,
+        fresh: true,
       });
+      made.push({ bez, pts: edges[edges.length - 1].pts });
       prevNode = nb;
     }
     chainEnds.set(id, [first, prevNode]);

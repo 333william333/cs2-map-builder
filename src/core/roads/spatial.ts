@@ -162,3 +162,48 @@ export class PointGrid {
     }
   }
 }
+
+/** grid of axis-aligned boxes (one id per covered cell), for candidate pair searches */
+export class BoxGrid {
+  readonly cell: number;
+  private buckets = new Map<number, number[]>();
+  private stamp = new Uint32Array(1024);
+  private cur = 0;
+  constructor(cell: number) {
+    this.cell = cell;
+  }
+  add(minx: number, minz: number, maxx: number, maxz: number, id: number) {
+    const c = this.cell;
+    for (let cx = Math.floor(minx / c); cx <= Math.floor(maxx / c); cx++) {
+      for (let cz = Math.floor(minz / c); cz <= Math.floor(maxz / c); cz++) {
+        const k = cellKey(cx, cz);
+        let b = this.buckets.get(k);
+        if (!b) {
+          b = [];
+          this.buckets.set(k, b);
+        }
+        b.push(id);
+      }
+    }
+    if (id >= this.stamp.length) {
+      const s = new Uint32Array(Math.max(id + 1, this.stamp.length * 2));
+      s.set(this.stamp);
+      this.stamp = s;
+    }
+  }
+  query(minx: number, minz: number, maxx: number, maxz: number, cb: (id: number) => void) {
+    this.cur++;
+    const c = this.cell;
+    for (let cx = Math.floor(minx / c); cx <= Math.floor(maxx / c); cx++) {
+      for (let cz = Math.floor(minz / c); cz <= Math.floor(maxz / c); cz++) {
+        const b = this.buckets.get(cellKey(cx, cz));
+        if (!b) continue;
+        for (const id of b) {
+          if (this.stamp[id] === this.cur) continue;
+          this.stamp[id] = this.cur;
+          cb(id);
+        }
+      }
+    }
+  }
+}

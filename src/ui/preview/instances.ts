@@ -204,3 +204,130 @@ export function bridgeStructures(inputs: BridgeInput[], groundAt: (x: number, z:
   }
   return { positions: new Float32Array(P), normals: new Float32Array(N), indices: new Uint32Array(I) };
 }
+
+// ---------------------------------------------------------------- trees
+
+const CONIFER_SPECIES = new Set(['pine', 'spruce']);
+const AGE_SCALE = [0.45, 0.72, 1, 1.12, 0.9];
+const SPECIES_HEX: Record<string, number> = {
+  pine: 0x405f35, spruce: 0x2f4c32, birch: 0x7a9a45, oak: 0x4d7535, linden: 0x5a8238, chestnut: 0x4a7232,
+  poplar: 0x6e9440, alder: 0x4a6e37, apple: 0x648c3e, bush: 0x5d7a3b, palm: 0x5c8a40, eucalyptus: 0x6c8a70,
+};
+const SPECIES_LIN = new Map<string, Rgb>(Object.entries(SPECIES_HEX).map(([k, v]) => [k, lin(v)]));
+const DEAD = lin(0x7a6a55);
+const DEFAULT_LEAF = lin(0x557d3a);
+
+export interface TreeLook {
+  conifer: boolean;
+  /** crown radius and total height, metres */
+  radius: number;
+  height: number;
+  /** rotation about the vertical axis, radians */
+  rot: number;
+  /** linear rgb */
+  r: number;
+  g: number;
+  b: number;
+}
+
+/** True-size appearance of tree `i`: species, age and a stable per-tree variation. */
+export function treeLook(species: string, age: number, i: number, out: TreeLook): TreeLook {
+  const conifer = CONIFER_SPECIES.has(species);
+  const a = (AGE_SCALE[age] ?? 1) * (0.85 + 0.3 * hash01(i));
+  if (conifer) {
+    out.height = 19 * a * (0.9 + 0.2 * hash01(i * 7 + 3));
+    out.radius = 3.4 * a;
+  } else if (species === 'bush') {
+    out.height = 2.6 * a;
+    out.radius = 1.8 * a;
+  } else {
+    out.height = (species === 'poplar' ? 19 : species === 'birch' ? 15 : 14) * a;
+    out.radius = (species === 'poplar' ? 3.2 : species === 'birch' ? 3.8 : 5.0) * a;
+  }
+  out.conifer = conifer;
+  out.rot = hash01(i * 11 + 1) * Math.PI * 2;
+  const base = age === 4 ? DEAD : SPECIES_LIN.get(species) ?? DEFAULT_LEAF;
+  const lum = 0.78 + 0.4 * hash01(i * 13 + 5);
+  const hue = (hash01(i * 17 + 9) - 0.5) * 0.18;
+  const young = age === 0 ? 0.12 : 0;
+  out.r = Math.min(1, (base[0] * (1 + hue) + young * 0.2) * lum);
+  out.g = Math.min(1, (base[1] + young * 0.25) * lum);
+  out.b = Math.min(1, base[2] * (1 - hue) * lum);
+  return out;
+}
+
+export interface TreeAttrs {
+  count: number;
+  /** x, y, z, rotation */
+  pos: Float32Array;
+  /** radius, height */
+  size: Float32Array;
+  /** linear rgb */
+  col: Float32Array;
+}
+
+export interface TreeChunk {
+  x0: number;
+  z0: number;
+  size: number;
+  minY: number;
+  maxY: number;
+  conifer: TreeAttrs;
+  broadleaf: TreeAttrs;
+}
+
+/**
+ * Sorts every tree into square chunks (scene frame) with compact per-instance attributes, so the
+ * game view can cull and pick a level of detail per chunk. No tree is dropped.
+ */
+export function chunkTrees(
+  trees: { count: number; xz: Float32Array; species: Uint8Array; age: Uint8Array; speciesTable: string[] },
+  extent: number,
+  chunkM: number,
+  groundAt: (x: number, z: number) => number,
+): TreeChunk[] {
+  const nc = Math.max(1, Math.ceil(extent / chunkM));
+  const size = extent / nc;
+  const cellOf = new Int32Array(trees.count);
+  const counts = new Int32Array(nc * nc * 2);
+  const look: TreeLook = { conifer: false, radius: 0, height: 0, rot: 0, r: 0, g: 0, b: 0 };
+  const isCon = new Uint8Array(trees.count);
+  for (let i = 0; i < trees.count; i++) {
+    const x = trees.xz[i * 2];
+    const z = -trees.xz[i * 2 + 1];
+    const c = Math.max(0, Math.min(nc - 1, Math.floor((x + extent / 2) / size)));
+    const r = Math.max(0, Math.min(nc - 1, Math.floor((z + extent / 2) / size)));
+    cellOf[i] = r * nc + c;
+    isCon[i] = CONIFER_SPECIES.has(trees.speciesTable[trees.species[i]]) ? 1 : 0;
+    counts[cellOf[i] * 2 + (isCon[i] ? 0 : 1)]++;
+  }
+  const alloc = (n: number): TreeAttrs => ({ count: 0, pos: new Float32Array(n * 4), size: new Float32Array(n * 2), col: new Float32Array(n * 3) });
+  const chunks: (TreeChunk | null)[] = [];
+  for (let k = 0; k < nc * nc; k++) {
+    if (counts[k * 2] + counts[k * 2 + 1] === 0) {
+      chunks.push(null);
+      continue;
+    }
+    const r = Math.floor(k / nc);
+    const c = k % nc;
+    chunks.push({
+      x0: -extent / 2 + c * size, z0: -extent / 2 + r * size, size, minY: Infinity, maxY: -Infinity,
+      conifer: alloc(counts[k * 2]), broadleaf: alloc(counts[k * 2 + 1]),
+    });
+  }
+  for (let i = 0; i < trees.count; i++) {
+    const ch = chunks[cellOf[i]]!;
+    const t = isCon[i] ? ch.conifer : ch.broadleaf;
+    treeLook(trees.speciesTable[trees.species[i]], trees.age[i], i, look);
+    const x = trees.xz[i * 2];
+    const z = -trees.xz[i * 2 + 1];
+    const y = groundAt(x, z) - 0.3;
+    const j = t.count++;
+    t.pos[j * 4] = x; t.pos[j * 4 + 1] = y; t.pos[j * 4 + 2] = z; t.pos[j * 4 + 3] = look.rot;
+    t.size[j * 2] = look.radius; t.size[j * 2 + 1] = look.height;
+    t.col[j * 3] = look.r; t.col[j * 3 + 1] = look.g; t.col[j * 3 + 2] = look.b;
+    if (y < ch.minY) ch.minY = y;
+    if (y + look.height > ch.maxY) ch.maxY = y + look.height;
+  }
+  return chunks.filter((c): c is TreeChunk => c !== null);
+}

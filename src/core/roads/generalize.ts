@@ -1,12 +1,12 @@
 /** Graph-level generalisation: water bridges, snapping, roundabouts, contraction, thinning, smoothing. */
-import type { NetPrefab, Pt, TerrainResult } from '../types';
+import type { NetPrefab, Pt, RoadClass, TerrainResult } from '../types';
 import {
   APPROACH_LEN, type Attr, HALF, IMPORTANCE, MIN_CHAIN, choosePrefab, clearance, family, levelKey,
   smoothSigma,
 } from './params';
 import {
   angleBetween, cumLen, dist, pointAt, pointPolyDist, pointSegDist2, polyLength, projectSeg, resample,
-  smoothGaussian, unit,
+  smoothGaussian, unit, vertexTurns,
 } from './geom';
 import { type Graph } from './graph';
 import { PointGrid, SegGrid } from './spatial';
@@ -208,11 +208,96 @@ export function snapDangles(g: Graph) {
 
 // ---------------------------------------------------------------- roundabouts
 
-export function roundabouts(g: Graph) {
+export interface RoundaboutStats {
+  found: number;
+  detected: number;
+  kept: number;
+  enlarged: number;
+  collapsed: number;
+}
+
+/** smallest ring radius (m) that can be built from segments of >= 32 m turning <= 70 deg */
+function minRingRadius(arms: number): number {
+  return Math.max(28, (34 * arms) / (2 * Math.PI) + 2);
+}
+
+/**
+ * Vector tiles carry no roundabout flag: mark small, round, smooth directed loops of one-way
+ * chains as roundabouts.
+ */
+function detectRings(g: Graph, maxPerim: number): number {
+  let found = 0;
+  const marked = new Set<number>();
+  for (const id of g.live()) {
+    const c0 = g.chains[id];
+    if (!c0.at.oneway || c0.at.roundabout || c0.at.link || marked.has(id) || family(c0.at.cls) !== 'road') continue;
+    // follow the smoothest one-way continuation until we return to the start
+    const path = [id];
+    let len = g.len(id);
+    let cur = id;
+    let ok = c0.a === c0.b;
+    for (let step = 0; step < 10 && len <= maxPerim && !ok; step++) {
+      const c = g.chains[cur];
+      const dIn = g.dirFrom(cur, c.b, 8, true);
+      const din: Pt = [-dIn[0], -dIn[1]];
+      let next = -1;
+      let best = Infinity;
+      for (const o of g.nodes[c.b].ch) {
+        const oc = g.chains[o];
+        if (o === cur || !oc.alive || !oc.at.oneway || oc.a !== c.b || oc.at.cls !== c0.at.cls || path.includes(o)) continue;
+        const dev = angleBetween(din, g.dirFrom(o, c.b, 8));
+        if (dev < best) {
+          best = dev;
+          next = o;
+        }
+      }
+      if (next < 0 || best > Math.PI / 2) break;
+      path.push(next);
+      len += g.len(next);
+      cur = next;
+      if (g.chains[next].b === c0.a) ok = true;
+    }
+    if (!ok || len > maxPerim || len < 20) continue;
+    // round and smooth: radius spread small, no sharp corners
+    const pts: Pt[] = [];
+    for (const k of path) for (const q of g.chains[k].pts) pts.push(q);
+    const rs = resample(pts, Math.max(2, len / 48));
+    let cx = 0;
+    let cz = 0;
+    for (const q of rs) {
+      cx += q[0];
+      cz += q[1];
+    }
+    cx /= rs.length;
+    cz /= rs.length;
+    const rad = rs.map((q) => Math.hypot(q[0] - cx, q[1] - cz));
+    const mean = rad.reduce((x, y) => x + y, 0) / rad.length;
+    const sd = Math.sqrt(rad.reduce((x, y) => x + (y - mean) ** 2, 0) / rad.length);
+    const turns = vertexTurns(rs);
+    let maxTurn = 0;
+    for (let i = 1; i + 1 < rs.length; i++) maxTurn = Math.max(maxTurn, turns[i]);
+    if (mean <= 0 || sd / mean > 0.25 || maxTurn > (50 * Math.PI) / 180) continue;
+    for (const k of path) {
+      marked.add(k);
+      g.chains[k].at = { ...g.chains[k].at, roundabout: true };
+    }
+    found++;
+  }
+  return found;
+}
+
+/**
+ * Keep every roundabout that can be built as a ring of one-way segments; enlarge a too small
+ * ring to the minimum buildable radius when its arms leave room; collapse it to one junction
+ * only when even that cannot fit.
+ */
+export function roundabouts(g: Graph, scale = 1): RoundaboutStats {
+  const stats: RoundaboutStats = { found: 0, detected: 0, kept: 0, enlarged: 0, collapsed: 0 };
+  stats.detected = detectRings(g, Math.max(160, 350 * scale));
   const seen = new Set<number>();
   for (const id of g.live()) {
     const c0 = g.chains[id];
-    if (!c0.at.roundabout || seen.has(id)) continue;
+    if (!c0.alive || !c0.at.roundabout || seen.has(id)) continue;
     const group: number[] = [];
     const nodes = new Set<number>();
     const stack = [id];
@@ -235,12 +320,9 @@ export function roundabouts(g: Graph) {
     let sx = 0;
     let sz = 0;
     let sw = 0;
-    let minLen = Infinity;
     for (const k of group) {
       const p = g.chains[k].pts;
-      const l = polyLength(p);
-      perim += l;
-      minLen = Math.min(minLen, l);
+      perim += g.len(k);
       for (let i = 0; i + 1 < p.length; i++) {
         const w = dist(p[i], p[i + 1]);
         sx += (p[i][0] + p[i + 1][0]) * 0.5 * w;
@@ -255,22 +337,95 @@ export function roundabouts(g: Graph) {
       for (const o of g.nodes[n].ch) if (g.chains[o].at.roundabout) k++;
       if (k !== 2) closed = false;
     }
-    const keep = closed && perim >= 160 && minLen >= 40 && (group.length >= 3 || (group.length === 1 && perim >= 160));
-    if (keep) continue;
-    if (!closed && perim >= 160) continue;
+    if (!closed) continue; // partial ring data: leave it as ordinary one-way roads
+    stats.found++;
     const cx = sx / sw;
     const cz = sz / sw;
     let outside = false;
     for (const n of nodes) if (g.nodes[n].outside) outside = true;
-    if (outside) continue;
+    if (outside) {
+      stats.kept++;
+      continue;
+    }
+    const ringSet = new Set(group);
+    const armNodes = [...nodes].filter((n) => g.nodes[n].ch.some((o) => !ringSet.has(o)));
+    const R = perim / (2 * Math.PI);
+    const Rmin = minRingRadius(armNodes.length);
+    if (R >= Rmin) {
+      stats.kept++;
+      continue;
+    }
+    // does a ring of radius Rmin fit? arms must reach beyond it and nothing else may be inside
+    let fits = armNodes.length >= 2 && Rmin / Math.max(R, 1) <= 4;
+    for (const n of armNodes) {
+      for (const o of g.nodes[n].ch) {
+        if (ringSet.has(o)) continue;
+        const oc = g.chains[o];
+        const far = oc.a === n ? oc.b : oc.a;
+        if (nodes.has(far) || Math.hypot(g.nodes[far].x - cx, g.nodes[far].z - cz) < Rmin + 8) fits = false;
+      }
+    }
+    for (let n = 0; n < g.nodes.length && fits; n++) {
+      const N = g.nodes[n];
+      if (!N.alive || nodes.has(n) || !N.ch.length) continue;
+      if (Math.hypot(N.x - cx, N.z - cz) < Rmin + 2) fits = false;
+    }
+    // travel direction of the ring (signed area along chain direction)
+    let area = 0;
+    for (const k of group) {
+      const p = g.chains[k].pts;
+      for (let i = 0; i + 1 < p.length; i++) area += (p[i][0] - cx) * (p[i + 1][1] - cz) - (p[i + 1][0] - cx) * (p[i][1] - cz);
+    }
+    const ccw = area > 0;
+    const at = { ...g.chains[group[0]].at };
     for (const k of group) g.removeChain(k);
+    if (fits) {
+      // move arm junctions radially onto the new circle and rebuild the ring as arcs
+      const placed = armNodes
+        .map((n) => ({ n, a: Math.atan2(g.nodes[n].z - cz, g.nodes[n].x - cx) }))
+        .sort((p, q) => p.a - q.a);
+      // merge arm junctions that would be closer than one segment along the ring
+      const merged: { n: number; a: number }[] = [];
+      for (const p of placed) {
+        const last = merged[merged.length - 1];
+        g.nodes[p.n].alive = true;
+        if (last && (p.a - last.a) * Rmin < 34) g.mergeNodes(last.n, p.n);
+        else merged.push(p);
+      }
+      if (merged.length > 2 && (merged[0].a + 2 * Math.PI - merged[merged.length - 1].a) * Rmin < 34) {
+        const last = merged.pop()!;
+        g.mergeNodes(merged[0].n, last.n);
+      }
+      for (const p of merged) g.setNodePos(p.n, cx + Rmin * Math.cos(p.a), cz + Rmin * Math.sin(p.a));
+      const m = merged.length;
+      for (let i = 0; i < m; i++) {
+        const A = merged[i];
+        const B = merged[(i + 1) % m];
+        let span = B.a - A.a;
+        if (span <= 0) span += 2 * Math.PI;
+        if (m === 1) span = 2 * Math.PI;
+        const steps = Math.max(2, Math.ceil((span * Rmin) / 4));
+        const arc: Pt[] = [];
+        for (let s = 0; s <= steps; s++) {
+          const t = A.a + (span * s) / steps;
+          arc.push([cx + Rmin * Math.cos(t), cz + Rmin * Math.sin(t)]);
+        }
+        // arcs run counter-clockwise (increasing angle); flip for clockwise rings
+        if (ccw) g.addChain(A.n, B.n, arc, { ...at });
+        else g.addChain(B.n, A.n, arc.reverse(), { ...at });
+      }
+      stats.enlarged++;
+      continue;
+    }
     const center = g.addNode(cx, cz);
     for (const n of nodes) {
       g.nodes[n].alive = true;
       g.mergeNodes(center, n);
     }
     if (!g.nodes[center].ch.length) g.nodes[center].alive = false;
+    stats.collapsed++;
   }
+  return stats;
 }
 
 // ---------------------------------------------------------------- contraction
@@ -289,17 +444,59 @@ function widestPrefab(g: Graph, n: number): NetPrefab {
   return best;
 }
 
+/** merge the two end nodes of a chain (the chain disappears, its routes stay connected) */
+export function contractChain(g: Graph, id: number) {
+  const c = g.chains[id];
+  if (!c.alive) return;
+  if (c.a === c.b) {
+    g.removeChain(id);
+    return;
+  }
+  const A = g.nodes[c.a];
+  const B = g.nodes[c.b];
+  if (A.outside && B.outside) {
+    g.removeChain(id);
+    return;
+  }
+  const da = g.deg(c.a) - 1;
+  const db = g.deg(c.b) - 1;
+  let keep: number;
+  let drop: number;
+  let px: number;
+  let pz: number;
+  if (A.outside || (db === 0 && !B.outside)) {
+    keep = c.a; drop = c.b; px = A.x; pz = A.z;
+  } else if (B.outside || da === 0) {
+    keep = c.b; drop = c.a; px = B.x; pz = B.z;
+  } else {
+    keep = da >= db ? c.a : c.b;
+    drop = keep === c.a ? c.b : c.a;
+    px = (A.x * da + B.x * db) / (da + db);
+    pz = (A.z * da + B.z * db) / (da + db);
+  }
+  g.removeChain(id);
+  g.nodes[keep].alive = true;
+  g.nodes[drop].alive = true;
+  g.setNodePos(keep, px, pz);
+  g.mergeNodes(keep, drop);
+  if (!g.nodes[keep].ch.length) g.nodes[keep].alive = false;
+  // chains that collapsed to nothing
+  for (const o of g.nodes[keep].ch.slice()) {
+    if (g.chains[o].alive && g.len(o) < 0.5) g.removeChain(o);
+  }
+}
+
 /** contract chains too short to become a segment, delete short loops and short parallel duplicates */
-export function contractShort(g: Graph) {
+export function contractShort(g: Graph, fromChain = 0) {
   for (let pass = 0; pass < 12; pass++) {
     let changed = false;
-    const ids = g.live().sort((a, b) => g.len(a) - g.len(b));
+    const ids = g.live().filter((id) => id >= fromChain || pass > 0).sort((a, b) => g.len(a) - g.len(b));
     for (const id of ids) {
       const c = g.chains[id];
       if (!c.alive) continue;
       const L = g.len(id);
       if (c.a === c.b) {
-        if (L < 110) {
+        if (L < 3 * 28) {
           g.removeChain(id);
           changed = true;
         }
@@ -309,39 +506,7 @@ export function contractShort(g: Graph) {
       const pb = widestPrefab(g, c.b);
       const need = Math.max(MIN_CHAIN, clearance(pa, pb) + 4);
       if (L >= need) continue;
-      const A = g.nodes[c.a];
-      const B = g.nodes[c.b];
-      if (A.outside && B.outside) {
-        g.removeChain(id);
-        changed = true;
-        continue;
-      }
-      const da = g.deg(c.a) - 1;
-      const db = g.deg(c.b) - 1;
-      let keep: number;
-      let drop: number;
-      let px: number;
-      let pz: number;
-      if (A.outside || (db === 0 && !B.outside)) {
-        keep = c.a; drop = c.b; px = A.x; pz = A.z;
-      } else if (B.outside || da === 0) {
-        keep = c.b; drop = c.a; px = B.x; pz = B.z;
-      } else {
-        keep = da >= db ? c.a : c.b;
-        drop = keep === c.a ? c.b : c.a;
-        px = (A.x * da + B.x * db) / (da + db);
-        pz = (A.z * da + B.z * db) / (da + db);
-      }
-      g.removeChain(id);
-      g.nodes[keep].alive = true;
-      g.nodes[drop].alive = true;
-      g.setNodePos(keep, px, pz);
-      g.mergeNodes(keep, drop);
-      if (!g.nodes[keep].ch.length) g.nodes[keep].alive = false;
-      // chains that collapsed to nothing
-      for (const o of g.nodes[keep].ch.slice()) {
-        if (g.chains[o].alive && g.len(o) < 0.5) g.removeChain(o);
-      }
+      contractChain(g, id);
       changed = true;
     }
     // short multi-edges
@@ -437,11 +602,19 @@ export function computeImportance(g: Graph) {
 
 // ---------------------------------------------------------------- thinning
 
-const THIN_EXEMPT = new Set(['motorway', 'trunk', 'primary', 'rail', 'subway']);
+/** classes that may lose whole dead-end stubs or tiny fragments */
+export function isMinorClass(c: RoadClass): boolean {
+  return c === 'tertiary' || c === 'residential' || c === 'service' || c === 'pedestrian' || c === 'tram';
+}
+
+const THIN_EXEMPT = new Set(['motorway', 'trunk', 'primary', 'secondary', 'rail', 'subway']);
 
 /** drop minor chains that crowd better ones closer than `spacing`; keep connectivity */
 export function thin(g: Graph, detail: number) {
-  const S = 80 - 20 * detail;
+  // spacing below which a minor street crowds a better one: 75 m at detail 0, 30 m at 1
+  const S = 75 - 45 * detail;
+  // detail 1 = everything that fits: crowding is resolved by merging, not by thinning
+  if (detail >= 0.95) return;
   const live = g.live();
   const exempt = (id: number) => {
     const c = g.chains[id];
@@ -545,7 +718,7 @@ export function thin(g: Graph, detail: number) {
 
 /** remove short dead-end stubs and tiny isolated fragments */
 export function pruneStubs(g: Graph, detail: number) {
-  const Lstub = 60 - 20 * detail;
+  const Lstub = 60 - 30 * detail;
   for (let pass = 0; pass < 3; pass++) {
     let changed = false;
     for (const id of g.live()) {
@@ -557,7 +730,7 @@ export function pruneStubs(g: Graph, detail: number) {
       const deadB = B.ch.length === 1 && !B.outside;
       if (deadA === deadB) continue;
       const other = deadA ? B : A;
-      if (other.ch.length >= 3 && g.len(id) < Lstub) {
+      if (other.ch.length >= 3 && g.len(id) < Lstub && isMinorClass(c.at.cls)) {
         g.removeChain(id);
         changed = true;
       }
@@ -590,12 +763,54 @@ export function removeFragments(g: Graph, minLen: number) {
         }
       }
     }
-    if (total < minLen) for (const id of chains) g.removeChain(id);
+    if (total < minLen && [...chains].every((id) => isMinorClass(g.chains[id].at.cls))) {
+      for (const id of chains) g.removeChain(id);
+    }
     nc++;
   }
 }
 
 // ---------------------------------------------------------------- smoothing
+
+/** target minimum radius (m) of the polyline before segmentation */
+function curveRadius(c: RoadClass): number {
+  switch (c) {
+    case 'motorway': case 'trunk': return 60;
+    case 'rail': case 'subway': return 70;
+    case 'primary': return 30;
+    case 'secondary': case 'tram': return 20;
+    default: return 14;
+  }
+}
+
+/**
+ * Round off corners tighter than radius R by local Laplacian smoothing (ends fixed).
+ * Mountain switchbacks move a few tens of metres; that is accepted.
+ */
+export function limitCurvature(p: Pt[], R: number, h: number): Pt[] {
+  const n = p.length;
+  if (n < 3) return p;
+  const maxTurn = Math.min(1.2, h / R);
+  let q = p.map((v) => [v[0], v[1]] as Pt);
+  for (let it = 0; it < 40; it++) {
+    const t = vertexTurns(q);
+    let any = false;
+    const next = q.map((v) => [v[0], v[1]] as Pt);
+    for (let i = 1; i < n - 1; i++) {
+      if (t[i] <= maxTurn) continue;
+      any = true;
+      for (let k = Math.max(1, i - 2); k <= Math.min(n - 2, i + 2); k++) {
+        next[k] = [
+          (q[k - 1][0] + 2 * q[k][0] + q[k + 1][0]) / 4,
+          (q[k - 1][1] + 2 * q[k][1] + q[k + 1][1]) / 4,
+        ];
+      }
+    }
+    q = next;
+    if (!any) break;
+  }
+  return q;
+}
 
 export function smoothChains(g: Graph) {
   const h = 6;
@@ -604,7 +819,7 @@ export function smoothChains(g: Graph) {
     let p = resample(c.pts, h);
     const sig = smoothSigma(c.at.cls) / h;
     if (p.length >= 3 && sig > 0.3) p = smoothGaussian(p, sig);
-    g.setPts(id, p);
+    g.setPts(id, limitCurvature(p, curveRadius(c.at.cls), h));
   }
 }
 
@@ -650,10 +865,19 @@ export function straightenApproaches(g: Graph) {
 const ACUTE = (25 * Math.PI) / 180;
 
 /** turn razor-thin merges into clean junctions where the minor branch has separated */
-export function fixAcute(g: Graph) {
+export function fixAcute(g: Graph, fromChain = 0) {
   for (let iter = 0; iter < 6; iter++) {
     let changed = false;
-    for (let n = 0; n < g.nodes.length; n++) {
+    let nodes: number[];
+    if (fromChain > 0) {
+      const set = new Set<number>();
+      for (let id = fromChain; id < g.chains.length; id++) {
+        const c = g.chains[id];
+        if (c.alive) { set.add(c.a); set.add(c.b); }
+      }
+      nodes = [...set];
+    } else nodes = g.nodes.map((_, i) => i);
+    for (const n of nodes) {
       const node = g.nodes[n];
       if (!node.alive || node.ch.length < 2) continue;
       const ids = [...new Set(node.ch)].filter((id) => g.chains[id].a !== g.chains[id].b);
@@ -662,7 +886,7 @@ export function fixAcute(g: Graph) {
         for (let j = i + 1; j < ids.length && !done; j++) {
           const ci = g.chains[ids[i]];
           const cj = g.chains[ids[j]];
-          if (levelKey(ci.at) !== levelKey(cj.at)) continue;
+          if (levelKey(ci.at) !== levelKey(cj.at) || family(ci.at.cls) !== family(cj.at.cls)) continue;
           const ang = angleBetween(g.dirFrom(ids[i], n, 20), g.dirFrom(ids[j], n, 20));
           if (ang >= ACUTE) continue;
           const minor = ci.imp < cj.imp || (ci.imp === cj.imp && g.len(ids[i]) < g.len(ids[j])) ? ids[i] : ids[j];
@@ -677,7 +901,7 @@ export function fixAcute(g: Graph) {
   }
 }
 
-function reroute(g: Graph, n: number, minor: number, major: number) {
+export function reroute(g: Graph, n: number, minor: number, major: number) {
   const c1 = g.chains[minor];
   const c2 = g.chains[major];
   const P1 = g.ptsFrom(minor, n);
@@ -697,7 +921,34 @@ function reroute(g: Graph, n: number, minor: number, major: number) {
   const at = c1.at;
   const imp = c1.imp;
   if (k < 0) {
+    // the minor runs inside the major's corridor all the way: its far end joins the major
     g.removeChain(minor);
+    g.nodes[far].alive = true;
+    if (g.nodes[far].outside) {
+      g.addChain(c1.a, c1.b, c1.pts, at, imp);
+      return;
+    }
+    let best = -1;
+    let bs = 0;
+    let bd = Infinity;
+    for (const id of [...new Set(g.nodes[n].ch)]) {
+      const c = g.chains[id];
+      if (!c.alive || family(c.at.cls) !== family(at.cls)) continue;
+      const r = pointPolyDist(g.nodes[far].x, g.nodes[far].z, c.pts);
+      if (r.d < bd) { bd = r.d; best = id; bs = r.s; }
+    }
+    if (best < 0) {
+      g.addChain(c1.a, c1.b, c1.pts, at, imp);
+      return;
+    }
+    const L = g.len(best);
+    const bc = g.chains[best];
+    let target: number;
+    if (bs < 10) target = bc.a;
+    else if (bs > L - 10) target = bc.b;
+    else target = g.splitChain(best, bs).node;
+    if (target !== far && !g.nodes[target].outside) g.mergeNodes(target, far);
+    else if (target !== far) g.addChain(c1.a, c1.b, c1.pts, at, imp);
     return;
   }
   const P = P1[k];
@@ -717,7 +968,9 @@ function reroute(g: Graph, n: number, minor: number, major: number) {
     }
   }
   if (Q === far) {
+    // the minor already ends on the major: drop only the duplicated stretch, keep the junction
     g.removeChain(minor);
+    g.nodes[far].alive = true;
     return;
   }
   const rest = P1.slice(k);

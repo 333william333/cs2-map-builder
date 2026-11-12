@@ -144,6 +144,7 @@ interface RoadAttrs {
   bridge: boolean;
   tunnel: boolean;
   layer: number;
+  unpaved?: boolean;
 }
 interface WaterwayAttrs {
   kind: Waterway['kind'];
@@ -163,7 +164,8 @@ interface LinePiece<T> {
 }
 interface NamePiece {
   cls: RoadClass;
-  name: string;
+  name?: string;
+  ref?: string;
   pts: number[];
 }
 interface PolyPiece {
@@ -518,7 +520,8 @@ class Collector {
           tunnel: brunnel === 'tunnel',
           layer: layerN,
         };
-        const gkey = `${cls}|${+attrs.link}|${+oneway}|${+attrs.bridge}|${+attrs.tunnel}|${layerN}`;
+        if (str(p.surface) === 'unpaved') attrs.unpaved = true;
+        const gkey = `${cls}|${+attrs.link}|${+oneway}|${+attrs.bridge}|${+attrs.tunnel}|${layerN}|${+!!attrs.unpaved}`;
         for (const line of f.loadGeometry()) {
           if (line.length < 2) continue;
           const flat = toUnits(line, tr.extent, reverse);
@@ -537,9 +540,10 @@ class Collector {
         const p = f.properties;
         const cls = mapTransportClass(str(p.class), str(p.subclass));
         const name = str(p.name) ?? str(p['name:latin']) ?? str(p.name_en);
-        if (!cls || !name || !this.classes.has(cls)) continue;
+        const ref = str(p.ref);
+        if (!cls || (!name && !ref) || !this.classes.has(cls)) continue;
         for (const line of f.loadGeometry()) {
-          if (line.length >= 2) this.names.push({ cls, name, pts: toUnits(line, tn.extent, false) });
+          if (line.length >= 2) this.names.push({ cls, name, ref, pts: toUnits(line, tn.extent, false) });
         }
       }
     }
@@ -703,7 +707,7 @@ class Collector {
           const x1 = nm.pts[i], y1 = nm.pts[i + 1], x2 = nm.pts[i + 2], y2 = nm.pts[i + 3];
           list.push({
             minX: Math.min(x1, x2), minY: Math.min(y1, y2), maxX: Math.max(x1, x2), maxY: Math.max(y1, y2),
-            idx: 0, x1, y1, x2, y2, name: nm.name,
+            idx: 0, x1, y1, x2, y2, name: `${nm.name ?? ''}\u0000${nm.ref ?? ''}`,
           });
         }
       }
@@ -753,9 +757,12 @@ class Collector {
       if (this.settings.roads.names) {
         const nm = nameFor(a.cls, c.pts);
         if (nm) {
-          way.name = nm;
+          const [n, r] = nm.split('\u0000');
+          if (n) way.name = n;
+          if (r) way.ref = r;
           info.namedWays++;
         }
+        if (a.unpaved) way.unpaved = true;
       }
       out.ways.push(way);
       info.waysAfter[a.cls] = (info.waysAfter[a.cls] ?? 0) + 1;

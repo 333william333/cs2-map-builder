@@ -15,6 +15,8 @@ export const WATER_SRC = {
   mergeDistM: 100,
   /** working grid is coarsened to at most this size */
   maxWorkSize: 1024,
+  /** river sources sit at least this far (game m) inside the playable border */
+  borderInsetM: 150,
 };
 
 interface Coarse {
@@ -28,6 +30,8 @@ interface Coarse {
   /** 0 land, 1 sea, 2 lake, 3 river */
   kind: Uint8Array;
   h: Float32Array;
+  /** water surface from the terrain's common water model (NaN when unknown) */
+  lvl: Float32Array;
 }
 
 function coarsen(t: TerrainResult): Coarse {
@@ -37,13 +41,16 @@ function coarsen(t: TerrainResult): Coarse {
   const m = Math.ceil(n / s);
   const kind = new Uint8Array(m * m);
   const h = new Float32Array(m * m);
+  const lvl = new Float32Array(m * m).fill(NaN);
   const mask = t.waterMask;
+  const wl = t.waterLevel && t.waterLevel.length === n * n ? t.waterLevel : null;
   for (let r = 0; r < m; r++) {
     for (let c = 0; c < m; c++) {
       const r0 = r * s, c0 = c * s;
       const r1 = Math.min(n, r0 + s), c1 = Math.min(n, c0 + s);
       let nLand = 0, nSea = 0, nLake = 0, nRiver = 0;
       let minLand = Infinity, minLake = Infinity, minRiver = Infinity, minAll = Infinity;
+      let sLake = 0, nlLake = 0, sRiver = 0, nlRiver = 0;
       for (let rr = r0; rr < r1; rr++) {
         for (let cc = c0; cc < c1; cc++) {
           const i = rr * n + cc;
@@ -51,21 +58,27 @@ function coarsen(t: TerrainResult): Coarse {
           if (v < minAll) minAll = v;
           switch (mask[i]) {
             case 1: nSea++; break;
-            case 2: nLake++; if (v < minLake) minLake = v; break;
-            case 3: nRiver++; if (v < minRiver) minRiver = v; break;
+            case 2: nLake++; if (v < minLake) minLake = v; if (wl && wl[i] === wl[i]) { sLake += wl[i]; nlLake++; } break;
+            case 3: nRiver++; if (v < minRiver) minRiver = v; if (wl && wl[i] === wl[i]) { sRiver += wl[i]; nlRiver++; } break;
             default: nLand++; if (v < minLand) minLand = v;
           }
         }
       }
       const o = r * m + c;
       if (nLake + nRiver > 0) {
-        if (nLake >= nRiver) { kind[o] = 2; h[o] = minLake; } else { kind[o] = 3; h[o] = minRiver; }
+        if (nLake >= nRiver) {
+          kind[o] = 2; h[o] = minLake;
+          if (nlLake) lvl[o] = sLake / nlLake;
+        } else {
+          kind[o] = 3; h[o] = minRiver;
+          if (nlRiver) lvl[o] = sRiver / nlRiver;
+        }
       } else if (nSea > 0 && nSea >= nLand) { kind[o] = 1; h[o] = minAll; }
       else if (nLand > 0) { kind[o] = 0; h[o] = minLand; }
       else { kind[o] = 1; h[o] = minAll; }
     }
   }
-  return { m, s, n, ext: g.extentM, cell: (g.extentM / n) * s, kind, h };
+  return { m, s, n, ext: g.extentM, cell: (g.extentM / n) * s, kind, h, lvl };
 }
 
 function gxOf(C: Coarse, c: number): number {
@@ -209,7 +222,9 @@ function lakeCandidates(C: Coarse, order: Int32Array, comp: Component, out: Cand
   const place = (k: number, dv: number, weight: number) => {
     const i = order[k];
     const r = (i / m) | 0, c = i - r * m;
-    out.push({ kind: 'lake', p: [gxOf(C, c), gzOf(C, r)], radius: radiusOf(dv), level, weight });
+    // the terrain's common surface level for this body when known (same on both grids)
+    const lv = Number.isFinite(C.lvl[i]) ? C.lvl[i] : level;
+    out.push({ kind: 'lake', p: [gxOf(C, c), gzOf(C, r)], radius: radiusOf(dv), level: lv, weight });
   };
   place(bestK, bestD, area);
 
@@ -264,7 +279,22 @@ function riverCandidate(C: Coarse, order: Int32Array, comp: Component, out: Cand
     if ((r === 0 || c === 0 || r === m - 1 || c === m - 1) && hv > borderH) { borderH = hv; borderK = k; }
   }
   const onBorder = borderK >= 0;
-  const i = order[onBorder ? borderK : topK];
+  let i = order[onBorder ? borderK : topK];
+  if (onBorder) {
+    // keep the source inside the playable area, a little away from the open border
+    const i0 = i;
+    const r0 = (i0 / m) | 0, c0 = i0 - r0 * m;
+    const inset = Math.max(1, Math.ceil(WATER_SRC.borderInsetM / cell - 0.5));
+    let best = -1, bestD = Infinity;
+    for (let k = comp.start; k < comp.end; k++) {
+      const j = order[k];
+      const rr = (j / m) | 0, cc = j - rr * m;
+      if (Math.min(rr, cc, m - 1 - rr, m - 1 - cc) < inset) continue;
+      const d2 = (rr - r0) ** 2 + (cc - c0) ** 2;
+      if (d2 < bestD) { bestD = d2; best = j; }
+    }
+    if (best >= 0) i = best;
+  }
   const r = (i / m) | 0, c = i - r * m;
 
   // local channel width from the distance field around the source
@@ -274,7 +304,9 @@ function riverCandidate(C: Coarse, order: Int32Array, comp: Component, out: Cand
   const bed = C.h[i];
   const bank = minLandAround(C, r, c, 4);
   let level: number;
-  if (Number.isFinite(bank) && bank > bed) {
+  if (Number.isFinite(C.lvl[i]) && C.lvl[i] > bed) {
+    level = C.lvl[i]; // the terrain's common water surface
+  } else if (Number.isFinite(bank) && bank > bed) {
     level = bed + Math.min(2, Math.max(0.2, (bank - bed) * 0.5));
     level = Math.max(bed + 0.05, Math.min(level, bank - 0.05));
   } else level = bed + 0.5;

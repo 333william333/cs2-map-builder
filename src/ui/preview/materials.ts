@@ -55,19 +55,69 @@ export interface TerrainMaterialInput {
   playExtent: number;
   snowLine: number;
   edgeFade?: [number, number];
-  /** shadows are received in render mode */
+  /** shared uniform: 1 tints the ground by land cover (reference only) */
+  landcover?: THREE.IUniform<number>;
   key: string;
 }
+
+/**
+ * GLSL: the ground as the game paints an imported map. Grass with natural variation, cliffs on
+ * steep slopes, sand at sea shores (mud at lakes and rivers), snow by climate and altitude, a
+ * darker forest floor under tree cover and the bed under water. No land cover input.
+ * Needs ATM_GLSL and the uniforms uSnowLine, uSeaLevelY.
+ */
+export const GROUND_GLSL = /* glsl */ `
+uniform float uSnowLine;
+
+vec3 groundAlbedo(vec2 wp, float h, float ny, float above, float sea, float canopy, float depth, float fw) {
+  float nLow = fbmAA(wp, 420.0, fw, 3);
+  float nMid = fbmAA(wp, 48.0, fw, 3);
+  float nFine = fbmAA(wp, 2.5, fw, 4);
+  vec3 grassA = srgb(vec3(0.41, 0.47, 0.27));
+  vec3 grassB = srgb(vec3(0.49, 0.51, 0.31));
+  vec3 grassDry = srgb(vec3(0.60, 0.57, 0.38));
+  vec3 c = mix(grassA, grassB, 0.3 + 0.4 * smoothstep(0.25, 0.75, nLow));
+  c = mix(c, grassDry, smoothstep(0.62, 0.85, nMid) * 0.2);
+  c *= 0.88 + 0.24 * nFine;
+  float alt = smoothstep(260.0, 950.0, h - uSeaLevelY);
+  c = mix(c, srgb(vec3(0.47, 0.46, 0.38)), alt * 0.6);
+  c = mix(c, vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), 0.12);
+
+  c = mix(c, srgb(vec3(0.30, 0.34, 0.20)) * (0.85 + 0.3 * nMid), canopy * 0.6);
+
+  float sandAmt = sea * (1.0 - smoothstep(0.5, 1.8 + 1.6 * nMid, above));
+  float mudAmt = (1.0 - sea) * (1.0 - smoothstep(0.1, 0.35 + 0.3 * nMid, above)) * 0.6;
+  c = mix(c, srgb(vec3(0.79, 0.74, 0.59)) * (0.9 + 0.2 * nFine), sandAmt * (1.0 - canopy * 0.7));
+  c = mix(c, srgb(vec3(0.47, 0.44, 0.36)) * (0.9 + 0.2 * nFine), mudAmt * (1.0 - canopy * 0.5));
+
+  float rockAmt = smoothstep(0.86 + (nMid - 0.5) * 0.08, 0.76, ny);
+  float strata = fbmAA(vec2(wp.x * 0.7 + wp.y * 0.7, h * 1.2), 9.0, fw, 3);
+  float grit = fbmAA(wp + 77.0, 14.0, fw, 4);
+  vec3 rock = mix(srgb(vec3(0.45, 0.43, 0.40)), srgb(vec3(0.60, 0.58, 0.54)), 0.55 * strata + 0.45 * grit) * (0.88 + 0.24 * nFine);
+  c = mix(c, rock, rockAmt);
+
+  float snowEdge = uSnowLine + (nLow - 0.5) * 140.0;
+  float snow = smoothstep(snowEdge, snowEdge + 70.0, h) * smoothstep(0.45, 0.8, ny);
+  c = mix(c, srgb(vec3(0.80, 0.83, 0.87)) * (0.93 + 0.1 * nFine), snow);
+
+  if (depth > 0.0) {
+    vec3 bed = mix(srgb(vec3(0.47, 0.47, 0.38)), srgb(vec3(0.10, 0.17, 0.20)), 1.0 - exp(-depth / 9.0));
+    c = mix(c, bed, 1.0 - exp(-depth / 1.5));
+  }
+  return c;
+}
+`;
 
 const TERRAIN_FRAG_DECL = /* glsl */ `
 uniform sampler2D uWeightsA;
 uniform sampler2D uWeightsB;
 uniform float uWeightsSize;
 uniform float uPlayExtent;
-uniform float uSnowLine;
 uniform float uHasWeights;
+uniform float uLandcover;
 varying vec4 vInfo;
 varying vec3 vWN;
+${GROUND_GLSL}
 
 float sharpenW(float w, float n) { return smoothstep(0.18, 0.78, w + (n - 0.5) * 0.35); }
 
@@ -99,74 +149,28 @@ vec3 terrainAlbedo(out float canopy) {
   vec2 wp = vAtmW.xz;
   float h = vAtmW.y;
   float fw = max(length(fwidth(wp)), 1e-3);
-  float nLow = fbmAA(wp, 420.0, fw, 3);
-  float nMid = fbmAA(wp, 48.0, fw, 3);
-  float nFine = fbmAA(wp, 2.5, fw, 4);
-
   float texel = uPlayExtent / uWeightsSize;
   vec2 warp = vec2(vnoise(wp / 70.0), vnoise(wp / 70.0 + 31.7)) - 0.5;
   vec2 luv = (wp + warp * 1.6 * texel) / uPlayExtent + 0.5;
-  luv.y = luv.y; // texel row 0 = north (scene z = -E/2)
   float outside = max(max(-luv.x, luv.x - 1.0), max(-luv.y, luv.y - 1.0));
-  float inside = (1.0 - smoothstep(-0.015, 0.0, outside)) * uHasWeights;
+  float inside = (1.0 - smoothstep(-0.004, 0.0, outside)) * uHasWeights;
   vec4 wa = texture2D(uWeightsA, luv) * inside;
   vec4 wb = texture2D(uWeightsB, luv) * inside;
-
-  vec3 grassA = srgb(vec3(0.41, 0.47, 0.27));
-  vec3 grassB = srgb(vec3(0.49, 0.51, 0.31));
-  vec3 grassDry = srgb(vec3(0.60, 0.57, 0.38));
-  vec3 c = mix(grassA, grassB, smoothstep(0.3, 0.7, nLow));
-  c = mix(c, grassDry, smoothstep(0.6, 0.82, nMid) * 0.35);
-  c *= 0.86 + 0.28 * nFine;
-  float alt = smoothstep(260.0, 950.0, h - uSeaLevelY);
-  c = mix(c, srgb(vec3(0.47, 0.46, 0.38)), alt * 0.6);
-  c = mix(c, vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), 0.12);
-
-  c = mix(c, srgb(vec3(0.43, 0.45, 0.27)) * (0.88 + 0.24 * nMid), sharpenW(wb.r, nMid));
-  c = mix(c, srgb(vec3(0.33, 0.40, 0.29)) * (0.9 + 0.2 * nFine), sharpenW(wb.g, nMid) * 0.85);
-  float crop = sharpenW(wa.g, nMid);
-  if (crop > 0.002) c = mix(c, fieldColor(wp, fw), crop);
-  c = mix(c, srgb(vec3(0.50, 0.52, 0.40)) * (0.9 + 0.2 * nMid), sharpenW(wa.b, nMid) * 0.5);
-  c = mix(c, srgb(vec3(0.50, 0.48, 0.43)) * (0.85 + 0.3 * nMid), sharpenW(wa.a, nMid));
-
-  // outside the playable area there is no landcover: paint plausible forest and field patches
-  float outsideW = 1.0 - inside;
-  if (outsideW > 0.001) {
-    float fp = fbmAA(wp + 900.0, 520.0, fw, 4);
-    float fieldsP = smoothstep(0.55, 0.65, fbmAA(wp - 400.0, 1100.0, fw, 2)) * (1.0 - smoothstep(0.42, 0.52, fp)) * (1.0 - alt);
-    c = mix(c, fieldColor(wp, fw), fieldsP * outsideW * 0.45);
-    wa.r = max(wa.r, smoothstep(0.44, 0.7, fp) * outsideW * (1.0 - alt * 0.6) * 0.6);
-  }
-  canopy = clamp(max(wb.b * 1.15, sharpenW(wa.r, nMid) * 0.6), 0.0, 1.0);
-  canopy = max(canopy, wa.r * outsideW * 0.55);
-  c = mix(c, srgb(vec3(0.30, 0.34, 0.20)) * (0.85 + 0.3 * nMid), canopy * 0.6);
-
-  float above = vInfo.x;
-  float sea = vInfo.w;
-  // sea: pale sand beaches; lakes and rivers: a narrow muddy / gravel bank
-  float sandAmt = sea * (1.0 - smoothstep(0.5, 1.8 + 1.6 * nMid, above));
-  float mudAmt = (1.0 - sea) * (1.0 - smoothstep(0.2, 0.7 + 0.6 * nMid, above)) * 0.75;
-  vec3 sand = srgb(vec3(0.79, 0.74, 0.59)) * (0.9 + 0.2 * nFine);
-  vec3 mud = srgb(vec3(0.47, 0.44, 0.36)) * (0.9 + 0.2 * nFine);
-  c = mix(c, sand, sandAmt * (1.0 - canopy * 0.7));
-  c = mix(c, mud, mudAmt * (1.0 - canopy * 0.5));
-
+  // tree cover comes from the trees themselves, so it is part of the faithful look
+  canopy = clamp(wb.b * 1.15, 0.0, 1.0);
   float ny = normalize(vWN).y;
-  float rockAmt = smoothstep(0.9 + (nMid - 0.5) * 0.08, 0.72, ny);
-  float strata = fbmAA(vec2(wp.x * 0.7 + wp.y * 0.7, h * 2.5), 7.0, fw, 3);
-  vec3 rock = mix(srgb(vec3(0.40, 0.39, 0.37)), srgb(vec3(0.57, 0.56, 0.52)), strata) * (0.85 + 0.3 * nFine);
-  c = mix(c, rock, rockAmt);
-
-  float snowEdge = uSnowLine + (nLow - 0.5) * 140.0;
-  float snow = smoothstep(snowEdge, snowEdge + 70.0, h) * smoothstep(0.45, 0.8, ny);
-  snow = max(snow, sharpenW(wb.a, nMid) * smoothstep(0.4, 0.75, ny));
-  c = mix(c, srgb(vec3(0.80, 0.83, 0.87)) * (0.93 + 0.1 * nFine), snow);
-  canopy *= 1.0 - snow;
-
-  float depth = vInfo.y;
-  if (depth > 0.0) {
-    vec3 bed = mix(srgb(vec3(0.47, 0.47, 0.38)), srgb(vec3(0.10, 0.17, 0.20)), 1.0 - exp(-depth / 9.0));
-    c = mix(c, bed, 1.0 - exp(-depth / 1.5));
+  vec3 c = groundAlbedo(wp, h, ny, vInfo.x, vInfo.w, canopy, vInfo.y, fw);
+  if (uLandcover > 0.5 && vInfo.y <= 0.0) {
+    // reference only: the game does not receive land cover
+    float nMid = fbmAA(wp, 48.0, fw, 3);
+    float k = smoothstep(0.72, 0.9, ny);
+    c = mix(c, srgb(vec3(0.43, 0.45, 0.27)) * (0.88 + 0.24 * nMid), sharpenW(wb.r, nMid) * k);
+    c = mix(c, srgb(vec3(0.33, 0.40, 0.29)), sharpenW(wb.g, nMid) * 0.85 * k);
+    float crop = sharpenW(wa.g, nMid) * k;
+    if (crop > 0.002) c = mix(c, fieldColor(wp, fw), crop);
+    c = mix(c, srgb(vec3(0.50, 0.52, 0.40)) * (0.9 + 0.2 * nMid), sharpenW(wa.b, nMid) * 0.5 * k);
+    c = mix(c, srgb(vec3(0.50, 0.48, 0.43)) * (0.85 + 0.3 * nMid), sharpenW(wa.a, nMid) * k);
+    c = mix(c, srgb(vec3(0.30, 0.34, 0.20)), sharpenW(wa.r, nMid) * 0.5 * k);
   }
   return c;
 }
@@ -185,12 +189,21 @@ export function makeTerrainMaterial(atm: Atmosphere, inp: TerrainMaterialInput):
       uPlayExtent: { value: inp.playExtent },
       uSnowLine: { value: Number.isFinite(inp.snowLine) ? inp.snowLine : 1e9 },
       uHasWeights: { value: hasW },
+      uLandcover: inp.landcover ?? { value: 0 },
     },
-    vertexDecl: 'attribute vec4 aInfo;\nvarying vec4 vInfo;\nvarying vec3 vWN;',
-    vertexReplace: { '#include <begin_vertex>': '#include <begin_vertex>\nvInfo = aInfo;\nvWN = normal;' },
+    vertexDecl: `attribute vec4 aInfo;
+      varying vec4 vInfo;
+      varying vec3 vWN;`,
+    vertexReplace: {
+      '#include <begin_vertex>': `#include <begin_vertex>
+        vInfo = aInfo;
+        vWN = normal;`,
+    },
     fragmentDecl: TERRAIN_FRAG_DECL,
     fragmentReplace: {
-      '#include <color_fragment>': '#include <color_fragment>\nfloat tCanopy = 0.0;\ndiffuseColor.rgb = terrainAlbedo(tCanopy);',
+      '#include <color_fragment>': `#include <color_fragment>
+        float tCanopy = 0.0;
+        diffuseColor.rgb = terrainAlbedo(tCanopy);`,
       '#include <aomap_fragment>': `#include <aomap_fragment>
         reflectedLight.indirectDiffuse *= vInfo.z * (1.0 - tCanopy * 0.3);
         reflectedLight.directDiffuse *= mix(1.0, vInfo.z, 0.3) * (1.0 - tCanopy * 0.2);`,
@@ -232,7 +245,24 @@ float dashes(float along, float on, float period) {
   return step(mod(along, period), on);
 }
 
+vec3 junctionSurface() {
+  // uv.x = distance to the kerb line between two arms (large in the mouth of an arm)
+  float kd = vRoadUv.x;
+  float sw = vRoadP.y;
+  vec2 sp = vAtmW.xz;
+  float px = max(fwidth(kd), 1e-4);
+  float grain = fbmAA(sp, 1.6, px, 3);
+  vec3 c = srgb(vec3(0.30, 0.31, 0.32)) * (0.86 + 0.18 * grain);
+  if (sw > 0.0) {
+    float side = clamp((sw - kd) / px + 0.5, 0.0, 1.0);
+    c = mix(c, srgb(vec3(0.66, 0.65, 0.61)) * (0.9 + 0.12 * grain), side);
+    c = mix(c, srgb(vec3(0.80, 0.80, 0.77)), aaLine(kd - sw, 0.25, px));
+  }
+  return c;
+}
+
 vec3 roadSurface() {
+  if (int(vRoadP.w + 0.5) == 8) return junctionSurface();
   float hw = vRoadP.x;
   float sw = vRoadP.y;
   float lanes = vRoadP.z;
@@ -343,7 +373,9 @@ export function makeRoadMaterial(atm: Atmosphere, pxScale: THREE.IUniform<number
           float minHw = uMinPx * 0.5 * mpp;
           float s = max(1.0, minHw / max(hwPx, 0.1));
           transformed.xz += aCenterOff.xz * (s - 1.0);
-          transformed.y += min(mpp * 0.5, 5.0);
+          // depth bias along the view ray: keeps roads on top of coarse distant terrain
+          vec3 toC = cameraPosition - transformed;
+          transformed += toC / max(camD, 1e-3) * min(camD * 0.003, 50.0);
           vRoadScale = s;
           vRoadUv = aRoadUv;
           vRoadP = aRoadP;
@@ -355,6 +387,55 @@ export function makeRoadMaterial(atm: Atmosphere, pxScale: THREE.IUniform<number
     },
   });
   return mat;
+}
+
+/**
+ * Underground stretches (tunnels, subway) as a faded dashed guide on the surface. Uses the road
+ * ribbon attributes and the same screen-space minimum width.
+ */
+export function makeTunnelMaterial(atm: Atmosphere, pxScale: THREE.IUniform<number>): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -8,
+    uniforms: { ...atm.uniforms, uPxScale: pxScale, uMinPx: { value: 2.0 } },
+    vertexShader: /* glsl */ `
+      attribute vec2 aRoadUv;
+      attribute vec4 aRoadP;
+      attribute vec3 aCenterOff;
+      uniform float uPxScale;
+      uniform float uMinPx;
+      varying vec2 vUv;
+      varying vec3 vW;
+      void main() {
+        vec3 p = position;
+        float mpp = distance(cameraPosition, p) * uPxScale;
+        float s = max(1.0, uMinPx * 0.5 * mpp / max(aRoadP.x, 0.1));
+        p.xz += aCenterOff.xz * (s - 1.0);
+        vec3 toC = cameraPosition - p;
+        p += toC / max(length(toC), 1e-3) * min(length(toC) * 0.003 + 0.3, 50.0);
+        vUv = aRoadUv;
+        vW = p;
+        gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      ${ATM_GLSL}
+      varying vec2 vUv;
+      varying vec3 vW;
+      void main() {
+        float fwAlong = max(fwidth(vUv.y), 1e-3);
+        float period = max(24.0, fwAlong * 18.0);
+        float on = step(fract(vUv.y / period), 0.55);
+        float edge = 1.0 - smoothstep(0.55, 1.0, abs(vUv.x));
+        float a = on * mix(0.0, 0.5, edge);
+        vec3 col = atmHaze(srgb(vec3(0.72, 0.80, 0.90)), vW);
+        gl_FragColor = vec4(col, a);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
 }
 
 // ---------------------------------------------------------------- simple lit materials
@@ -409,20 +490,98 @@ export function makeHouseMaterial(atm: Atmosphere, key: string): THREE.MeshLambe
 
 // ---------------------------------------------------------------- water
 
+/**
+ * Ground height for shaders that need water depth: GLSL defining `float groundH(vec2 xz)`
+ * (return below -1e8 where unknown) plus its uniforms.
+ */
+export interface GroundHeight {
+  glsl: string;
+  uniforms: Record<string, THREE.IUniform>;
+}
+
+/** Ground height from the quick preview's vertex grid texture (inside the playable area only). */
+export function meshGroundHeight(height: Record<string, THREE.IUniform>): GroundHeight {
+  return {
+    glsl: `${MESH_HEIGHT_GLSL}
+      float groundH(vec2 xz) {
+        if (max(abs(xz.x), abs(xz.y)) < 0.5 * uHeightExtent) return meshH(xz);
+        return -1e9;
+      }`,
+    uniforms: height,
+  };
+}
+
+/** GLSL: cell-centred bilinear lookup in a float grid texture (row 0 = north = smallest z). */
+export const CELL_HEIGHT_GLSL = /* glsl */ `
+float cellH(sampler2D tex, float n, float extent, vec2 xz) {
+  vec2 f = (xz + 0.5 * extent) / extent * n - 0.5;
+  f = clamp(f, vec2(0.0), vec2(n - 1.0));
+  vec2 i0 = floor(f);
+  vec2 u = f - i0;
+  ivec2 a = ivec2(i0);
+  ivec2 b = min(a + 1, ivec2(int(n) - 1));
+  float h00 = texelFetch(tex, a, 0).r;
+  float h10 = texelFetch(tex, ivec2(b.x, a.y), 0).r;
+  float h01 = texelFetch(tex, ivec2(a.x, b.y), 0).r;
+  float h11 = texelFetch(tex, b, 0).r;
+  return mix(mix(h00, h10, u.x), mix(h01, h11, u.x), u.y);
+}
+`;
+
+export const TERRAIN_H_GLSL = /* glsl */ `
+${CELL_HEIGHT_GLSL}
+uniform sampler2D uPlayH;
+uniform float uPlayN;
+uniform float uPlayE;
+uniform sampler2D uWorldH;
+uniform float uWorldN;
+uniform float uWorldE;
+float terrainH(vec2 xz) {
+  if (max(abs(xz.x), abs(xz.y)) <= 0.5 * uPlayE) return cellH(uPlayH, uPlayN, uPlayE, xz);
+  return cellH(uWorldH, uWorldN, uWorldE, xz);
+}
+float groundH(vec2 xz) { return terrainH(xz); }
+`;
+
+/** Float texture of a cell grid for texelFetch lookups. */
+export function floatTexture(data: Float32Array, n: number): THREE.DataTexture {
+  const t = new THREE.DataTexture(data, n, n, THREE.RedFormat, THREE.FloatType);
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+
+/** Ground height from cell grids of the playable area and the world (cell-centred bilinear). */
+export function cellGroundHeight(
+  playTex: THREE.Texture, playN: number, playE: number,
+  worldTex: THREE.Texture, worldN: number, worldE: number,
+): GroundHeight {
+  return {
+    glsl: TERRAIN_H_GLSL,
+    uniforms: {
+      uPlayH: { value: playTex }, uPlayN: { value: playN }, uPlayE: { value: playE },
+      uWorldH: { value: worldTex }, uWorldN: { value: worldN }, uWorldE: { value: worldE },
+    },
+  };
+}
+
 export function makeWaterMaterial(
   atm: Atmosphere,
-  height: Record<string, THREE.IUniform> | null,
-  opts: { edgeFade?: [number, number]; hq?: boolean },
+  ground: GroundHeight | null,
+  opts: { edgeFade?: [number, number]; hq?: boolean; clipInside?: number; clipOutside?: number },
 ): THREE.ShaderMaterial {
-  const useTex = height ? 1 : 0;
+  const useTex = ground ? 1 : 0;
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     uniforms: {
       ...atm.uniforms,
-      ...(height ?? { uHeight: { value: null }, uHeightN: { value: 2 }, uHeightExtent: { value: 1 } }),
+      ...(ground?.uniforms ?? {}),
       uUseHeight: { value: useTex },
       uEdgeFade: { value: new THREE.Vector2(...(opts.edgeFade ?? [1e9, 2e9])) },
+      uClip: { value: new THREE.Vector2(opts.clipInside ?? -1, opts.clipOutside ?? 1e9) },
     },
     defines: opts.hq ? { HQ: 1 } : {},
     vertexShader: /* glsl */ `
@@ -433,13 +592,19 @@ export function makeWaterMaterial(
         vec4 w = modelMatrix * vec4(position, 1.0);
         vW = w.xyz;
         vDepth = aDepth;
+        // pull towards the camera along the view ray (no change on screen) so coarse distant
+        // terrain does not hide water that the full-resolution check in the fragment keeps
+        vec3 toC = cameraPosition - w.xyz;
+        float dC = length(toC);
+        w.xyz += toC / max(dC, 1e-3) * min(dC * 0.003, 60.0);
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader: /* glsl */ `
       ${ATM_GLSL}
-      ${MESH_HEIGHT_GLSL}
+      ${ground ? ground.glsl : 'float groundH(vec2 xz) { return -1e9; }'}
       uniform float uUseHeight;
       uniform vec2 uEdgeFade;
+      uniform vec2 uClip;
       varying vec3 vW;
       varying float vDepth;
       vec2 waveGrad(vec2 p) {
@@ -448,8 +613,13 @@ export function makeWaterMaterial(
         return vec2(vnoise(p + vec2(e, 0.0)) - a, vnoise(p + vec2(0.0, e)) - a) / e;
       }
       void main() {
+        float cheb = max(abs(vW.x), abs(vW.z));
+        if (cheb < uClip.x || cheb > uClip.y) discard;
         float depth = vDepth;
-        if (uUseHeight > 0.5 && max(abs(vW.x), abs(vW.z)) < 0.5 * uHeightExtent) depth = vW.y - meshH(vW.xz);
+        if (uUseHeight > 0.5) {
+          float g = groundH(vW.xz);
+          if (g > -1e8) depth = vW.y - g;
+        }
         if (depth < -0.05) discard;
         depth = max(depth, 0.0);
         vec3 toCam = cameraPosition - vW;
@@ -477,7 +647,7 @@ export function makeWaterMaterial(
         float spec = pow(max(dot(normalize(R), uSunDir), 0.0), 380.0);
         col += uSunColor * spec * 5.0 * (1.0 - smoothstep(6.0, 40.0, fw));
         // shore foam
-        float foamBand = 1.0 - smoothstep(0.0, 1.0 + fw * 0.15, depth);
+        float foamBand = 1.0 - smoothstep(0.0, 0.45 + fw * 0.08, depth);
         float fn = vnoise(p / 2.2 + vec2(t * 0.2, 0.0)) * 0.6 + vnoise(p / 0.7) * 0.4 * (1.0 - smoothstep(0.2, 0.8, fw));
         float foam = foamBand * smoothstep(0.35, 0.7, fn + foamBand * 0.25);
         // rivers and lakes have calm banks, the sea has surf

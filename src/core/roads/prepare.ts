@@ -30,15 +30,20 @@ export function rankCutoff(detail: number): number {
   return 5;
 }
 
+/** whether a class survives the class switches and the detail cut-off */
+export function classKept(cls: RoadClass, settings: RoadSettings): boolean {
+  if (!settings.classes[cls]) return false;
+  const fam = family(cls);
+  if (fam === 'road' && ROAD_RANK[cls] > rankCutoff(settings.detail)) return false;
+  if (fam === 'tram' && settings.detail < 0.3) return false;
+  return true;
+}
+
 export function prepareWays(ways: RawWay[], settings: RoadSettings): PWay[] {
-  const cut = rankCutoff(settings.detail);
   const lim = HALF + 600;
   const pre: { w: RawWay; pts: Pt[] }[] = [];
   for (const w of ways) {
-    if (!settings.classes[w.cls]) continue;
-    const fam = family(w.cls);
-    if (fam === 'road' && ROAD_RANK[w.cls] > cut) continue;
-    if (fam === 'tram' && settings.detail < 0.3) continue;
+    if (!classKept(w.cls, settings)) continue;
     const pts: Pt[] = [];
     let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
     for (const p of w.pts) {
@@ -89,6 +94,8 @@ export function prepareWays(ways: RawWay[], settings: RoadSettings): PWay[] {
     if (at.roundabout) at.oneway = true;
     if (w.lanes && w.lanes > 0) at.lanes = w.lanes;
     if (settings.names && w.name) at.name = w.name;
+    if (settings.names && w.ref) at.ref = w.ref;
+    if (w.unpaved) at.unpaved = true;
     out.push({ at, pts: simp });
   }
   return out;
@@ -315,6 +322,7 @@ export function collapseParallel(ways: PWay[]): PWay[] {
             oneway: false,
             merged: true,
             name: w.at.name ?? v.name,
+            ref: w.at.ref ?? v.ref,
             lanes: fam === 'road'
               ? (w.at.lanes ?? defaultLanes(w.at.cls, true)) + (v.lanes ?? defaultLanes(v.cls, true))
               : undefined,

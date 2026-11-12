@@ -197,8 +197,21 @@ describe('buildRoads', () => {
     expect([...deg].filter((d) => d === 3).length).toBe(4);
   });
 
-  it('collapses a small roundabout into one intersection', () => {
-    const net = roundaboutScene(12);
+  it('enlarges a slightly too small roundabout to the minimum buildable ring', () => {
+    const net = roundaboutScene(14);
+    clean(net);
+    const ring = net.edges.filter((e) => e.oneway);
+    expect(ring.length).toBeGreaterThanOrEqual(4);
+    for (const e of ring) {
+      const r = Math.hypot(e.pts[e.pts.length >> 1][0], e.pts[e.pts.length >> 1][1]);
+      expect(r).toBeGreaterThan(24);
+      expect(r).toBeLessThan(40);
+    }
+    expect([...degree(net)].filter((d) => d === 3).length).toBe(4);
+  });
+
+  it('collapses a mini roundabout into one intersection', () => {
+    const net = roundaboutScene(5);
     clean(net);
     expect(net.edges.some((e) => e.oneway)).toBe(false);
     const { i, d } = nearestNode(net, 0, 0);
@@ -251,9 +264,11 @@ describe('buildRoads', () => {
     expect(w.d).toBeLessThan(60);
     expect(e.d).toBeLessThan(60);
     expect(comp[w.i]).toBe(comp[e.i]);
-    // the side streets were thinned
-    const sideZ = new Set(net.edges.filter((x) => Math.abs(x.pts[0][1] - x.pts[x.pts.length - 1][1]) < 1 && Math.abs(x.pts[0][1]) > 10).map((x) => Math.round(x.pts[0][1])));
-    expect(sideZ.size).toBeLessThan(12);
+    // the side streets were thinned compared with "everything that fits"
+    const total = (n: RoadNetwork) => n.edges.reduce((s, x) => s + bezLength(x.bezier), 0);
+    const full = buildRoads(vectors(ways), terrain(), settings({ detail: 1 }));
+    clean(full);
+    expect(total(net)).toBeLessThan(0.95 * total(full));
   });
 
   it('wiggly rural road becomes smooth Beziers within length limits', () => {

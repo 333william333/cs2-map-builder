@@ -162,6 +162,10 @@ export interface RawWay {
   /** motorway_link, primary_link ... */
   link: boolean;
   name?: string;
+  /** road number such as E4 or 55 (OSM `ref`) */
+  ref?: string;
+  /** unpaved surface (gravel, dirt ...) */
+  unpaved?: boolean;
 }
 
 export interface WaterPolygon {
@@ -236,6 +240,8 @@ export interface RoadEdge {
   bridge: boolean;
   tunnel: boolean;
   name?: string;
+  /** road number (E4, 55) when tagged; `name` falls back to it for display */
+  ref?: string;
 }
 
 export interface RoadNetwork {
@@ -326,6 +332,12 @@ export interface TerrainResult {
   heightScale: number;
   /** water kind per playable cell: 0 = land, 1 = sea, 2 = lake, 3 = river. Same size as playable. */
   waterMask: Uint8Array;
+  /** water kind per world cell (same codes), world grid size. Centre quarter derived from the playable grid. */
+  worldWaterMask?: Uint8Array;
+  /** water surface height (game m) per playable cell, NaN on land */
+  waterLevel?: Float32Array;
+  /** water surface height (game m) per world cell, NaN on land */
+  worldWaterLevel?: Float32Array;
   /** real elevation (m) that maps to seaLevel: 0 for coastal areas, else the lowest real elevation */
   baseElevation: number;
   /** true when the area touches the sea; the game's global sea level is then seaLevel */

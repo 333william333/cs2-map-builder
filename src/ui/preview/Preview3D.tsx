@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Car, Crosshair, Droplet, Hand, Mountain, Plane, Ship, TrainFront, Zap, type LucideIcon } from 'lucide-react';
-import type { OutsideConnection } from '../../core/types';
+import { Camera, Crosshair, Hand, Mountain } from 'lucide-react';
 import { useStore, type AppState } from '../store';
+import { CONNECTION_UI } from './connectionUi';
+import { devFileName, devOpenGame, loadDevFile } from './devCache';
+import { GameView } from './GameView';
 import { PreviewEngine, type ExtraLayers, type ViewInfo } from './PreviewEngine';
-import { RenderLightbox } from './RenderLightbox';
 import { formatDistance, niceScaleBar } from './scaleBar';
 
 type LayerKey = keyof AppState['layers'];
@@ -17,15 +18,6 @@ const LAYER_BUTTONS: { key: LayerKey; label: string }[] = [
   { key: 'startTile', label: 'Start tile' },
 ];
 
-const CONNECTION_UI: Record<OutsideConnection['kind'], { label: string; icon: LucideIcon; color: string }> = {
-  road: { label: 'Road', icon: Car, color: '#e6edf3' },
-  rail: { label: 'Rail', icon: TrainFront, color: '#c9a27a' },
-  ship: { label: 'Ship', icon: Ship, color: '#6fb3e8' },
-  air: { label: 'Air', icon: Plane, color: '#b7a2ee' },
-  power: { label: 'Power', icon: Zap, color: '#f2d25c' },
-  water: { label: 'Water', icon: Droplet, color: '#5fd0d8' },
-};
-
 export function Preview3D() {
   const mountRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PreviewEngine | null>(null);
@@ -33,7 +25,7 @@ export function Preview3D() {
   const [engine, setEngine] = useState<PreviewEngine | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
   const [contextLost, setContextLost] = useState(false);
-  const [extra, setExtra] = useState<ExtraLayers>({ zones: false, houses: false });
+  const [extra, setExtra] = useState<ExtraLayers>({ zones: false, houses: false, landcover: false, names: false });
   const [view, setView] = useState<ViewInfo | null>(null);
   const [renderOpen, setRenderOpen] = useState(false);
 
@@ -86,7 +78,7 @@ export function Preview3D() {
 
   // preview-only layers; switch them off when the new result has no zones
   useEffect(() => {
-    engine?.setExtraLayers({ zones: extra.zones && zonesAvailable, houses: extra.houses && lotsAvailable });
+    engine?.setExtraLayers({ ...extra, zones: extra.zones && zonesAvailable, houses: extra.houses && lotsAvailable });
   }, [engine, extra, zonesAvailable, lotsAvailable]);
 
   // outside-connection labels follow the camera (positions are written straight to the DOM)
@@ -119,6 +111,28 @@ export function Preview3D() {
       if (engine.onFrame === update) engine.onFrame = null;
     };
   }, [engine, connections]);
+
+  // development: ?devfile=<name> loads a prebuilt full result (and &game=1 opens the game view)
+  useEffect(() => {
+    const name = devFileName();
+    if (!name || !engine) return;
+    let cancelled = false;
+    void loadDevFile(name).then(async (r) => {
+      // let the automatic preview of the start-up selection finish first so it does not replace the file
+      for (let i = 0; i < 60 && !cancelled && useStore.getState().status.phase === 'building'; i++) {
+        await new Promise((ok) => setTimeout(ok, 500));
+      }
+      if (cancelled || !r) return;
+      useStore.setState({ result: r, status: { phase: 'done', fraction: 1 } });
+      if (devOpenGame()) {
+        engine.suspend();
+        setRenderOpen(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engine]);
 
   // ?demo=1 loads the synthetic map
   useEffect(() => {
@@ -245,6 +259,24 @@ export function Preview3D() {
           >
             Example houses
           </button>
+          <button
+            type="button"
+            aria-pressed={extra.names}
+            title="Road names kept on the segments"
+            onClick={() => setExtra((e) => ({ ...e, names: !e.names }))}
+            className={toggleBtn(extra.names, false)}
+          >
+            Road names
+          </button>
+          <button
+            type="button"
+            aria-pressed={extra.landcover}
+            title="Reference only: tints the ground by land cover. The game does not receive this data."
+            onClick={() => setExtra((e) => ({ ...e, landcover: !e.landcover }))}
+            className={toggleBtn(extra.landcover, false) + ' italic'}
+          >
+            Land cover
+          </button>
         </div>
         {hasResult && !zonesAvailable && (
           <div className="max-w-xs rounded-control bg-surface/80 px-2 py-1 text-[11px] text-muted backdrop-blur">{zonesNote}</div>
@@ -254,14 +286,22 @@ export function Preview3D() {
             Zoning cells are 8 × 8 m, as in the game. Example houses only show the scale and are not exported.
           </div>
         ) : null}
+        {extra.landcover && (
+          <div className="max-w-xs rounded-control bg-surface/80 px-2 py-1 text-[11px] leading-snug text-muted backdrop-blur">
+            Land cover tint is for reference only. The game paints the ground itself and does not get this data.
+          </div>
+        )}
       </div>
 
       <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
         <button
           type="button"
-          onClick={() => setRenderOpen(true)}
+          onClick={() => {
+            engine?.suspend();
+            setRenderOpen(true);
+          }}
           disabled={!hasResult || !engine || contextLost}
-          title="Render a high-quality image of this view"
+          title="Open the game view: the whole map as it will look in Cities: Skylines II"
           className="flex items-center gap-1.5 rounded-control bg-accent px-3 py-1.5 text-xs font-medium text-bg shadow transition-opacity hover:opacity-90 disabled:opacity-40"
         >
           <Camera size={14} />
@@ -308,16 +348,11 @@ export function Preview3D() {
         </div>
       )}
 
-      {renderOpen && engine && result && (
-        <RenderLightbox
-          engine={engine}
-          zones={extra.zones && zonesAvailable}
-          houses={extra.houses && lotsAvailable}
-          lat={result.selection.centerLat}
-          lon={result.selection.centerLon}
+      {renderOpen && (
+        <GameView
           onClose={() => {
-            engine.cancelRender();
             setRenderOpen(false);
+            engineRef.current?.resume();
           }}
         />
       )}

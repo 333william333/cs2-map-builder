@@ -3,12 +3,12 @@
  * propagate through neighbouring nodes at a bounded gradient, and vertical clearance at
  * grade-separated crossings.
  */
-import type { HeightGrid, TerrainResult } from '../types';
+import type { HeightGrid, Pt, TerrainResult } from '../types';
 import {
   GEN_BRIDGE_ELEV, GEN_RAMP_GRADE, GEN_TUNNEL_DEPTH, GEN_VERTICAL_CLEARANCE, levelKey, levelRank,
 } from './params';
 import { polyLength, segIntersect } from './geom';
-import { SegGrid } from './spatial';
+import { BoxGrid } from './spatial';
 import type { WNet } from './segment';
 
 export function sampleHeight(grid: HeightGrid, x: number, z: number): number {
@@ -152,39 +152,58 @@ export function assignElevations(net: WNet, terrain: TerrainResult): { ground: F
   };
 
   // vertical clearance at grade-separated crossings
-  const idx = new SegGrid(48);
+  // only crossings that involve a bridge or tunnel need vertical clearance
+  const box = (e: { pts: Pt[] }) => {
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (const q of e.pts) {
+      if (q[0] < x0) x0 = q[0];
+      if (q[0] > x1) x1 = q[0];
+      if (q[1] < z0) z0 = q[1];
+      if (q[1] > z1) z1 = q[1];
+    }
+    return [x0, z0, x1, z1];
+  };
+  const sgrid = new BoxGrid(128);
+  let structures = 0;
   net.edges.forEach((e, k) => {
-    if (!e.alive) return;
-    for (let i = 0; i + 1 < e.pts.length; i++) idx.add(e.pts[i][0], e.pts[i][1], e.pts[i + 1][0], e.pts[i + 1][1], k, i);
+    if (!e.alive || (!e.bridge && !e.tunnel)) return;
+    const [x0, z0, x1, z1] = box(e);
+    sgrid.add(x0, z0, x1, z1, k);
+    structures++;
   });
   const crossings: { up: number; lo: number; fu: number; fl: number }[] = [];
-  net.edges.forEach((e, k) => {
+  const cum = (e: { pts: Pt[] }) => {
+    const c = [0];
+    for (let i = 1; i < e.pts.length; i++) c.push(c[i - 1] + Math.hypot(e.pts[i][0] - e.pts[i - 1][0], e.pts[i][1] - e.pts[i - 1][1]));
+    return c;
+  };
+  if (structures) net.edges.forEach((e, k) => {
     if (!e.alive) return;
-    const lenE = elen[k];
-    let acc = 0;
-    for (let i = 0; i + 1 < e.pts.length; i++) {
-      const [ax, az] = e.pts[i];
-      const [bx, bz] = e.pts[i + 1];
-      const sl = Math.hypot(bx - ax, bz - az);
-      idx.query(Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz), (sid) => {
-        const o = idx.owner(sid);
-        if (o <= k) return;
-        const f = net.edges[o];
-        if (levelKey(e) === levelKey(f)) return;
-        if (f.a === e.a || f.a === e.b || f.b === e.a || f.b === e.b) return;
-        const [cx, cz, dx, dz] = idx.get(sid);
-        const r = segIntersect(ax, az, bx, bz, cx, cz, dx, dz);
-        if (!r) return;
-        let accF = 0;
-        const si = idx.aux(sid);
-        for (let q = 0; q < si; q++) accF += Math.hypot(f.pts[q + 1][0] - f.pts[q][0], f.pts[q + 1][1] - f.pts[q][1]);
-        const fe = (acc + r[0] * sl) / lenE;
-        const ff = (accF + r[1] * Math.hypot(dx - cx, dz - cz)) / elen[o];
-        if (levelRank(e) >= levelRank(f)) crossings.push({ up: k, lo: o, fu: fe, fl: ff });
-        else crossings.push({ up: o, lo: k, fu: ff, fl: fe });
-      });
-      acc += sl;
-    }
+    const [x0, z0, x1, z1] = box(e);
+    sgrid.query(x0, z0, x1, z1, (o) => {
+      if (o === k) return;
+      const f = net.edges[o];
+      // each pair once: a structure pair is seen from both sides
+      if ((e.bridge || e.tunnel) && o < k) return;
+      if (levelKey(e) === levelKey(f)) return;
+      if (f.a === e.a || f.a === e.b || f.b === e.a || f.b === e.b) return;
+      const ce = cum(e);
+      const cf = cum(f);
+      for (let i = 0; i + 1 < e.pts.length; i++) {
+        const [ax, az] = e.pts[i];
+        const [bx, bz] = e.pts[i + 1];
+        for (let j = 0; j + 1 < f.pts.length; j++) {
+          const [cx, cz] = f.pts[j];
+          const [dx, dz] = f.pts[j + 1];
+          const r = segIntersect(ax, az, bx, bz, cx, cz, dx, dz);
+          if (!r) continue;
+          const fe = (ce[i] + r[0] * (ce[i + 1] - ce[i])) / elen[k];
+          const ff = (cf[j] + r[1] * (cf[j + 1] - cf[j])) / elen[o];
+          if (levelRank(e) >= levelRank(f)) crossings.push({ up: k, lo: o, fu: fe, fl: ff });
+          else crossings.push({ up: o, lo: k, fu: ff, fl: fe });
+        }
+      }
+    });
   });
   for (let iter = 0; iter < 4 && crossings.length; iter++) {
     let changed = false;

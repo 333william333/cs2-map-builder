@@ -3,6 +3,7 @@ import { loadElevation } from './data/elevation';
 import { loadLandcover } from './data/landcover';
 import { loadVectors } from './data/osm';
 import { loadVectorsFromTiles } from './data/vectortiles';
+import { loadWorldWater, type WorldWater } from './data/worldWater';
 import { analyzePlayability } from './playability/analyze';
 import { buildRoads } from './roads/buildRoads';
 import { applyManual } from './manual/applyManual';
@@ -31,6 +32,9 @@ export interface BuildOptions {
 /** Stage weights for the overall progress bar. */
 const STAGES = { data: 0.55, terrain: 0.3, features: 0.15 } as const;
 const OVERPASS_BUDGET_MS = 75_000;
+/** world-area water outlines: a handful of low-zoom tiles; the auto preview waits only briefly */
+const WORLD_WATER_BUDGET_MS = 30_000;
+const WORLD_WATER_PREVIEW_MS = 3_000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -68,10 +72,10 @@ export async function runBuild(
   const warnings: string[] = [];
 
   // ---- 1. data, in parallel ------------------------------------------------
-  const part = { elevP: 0, elevW: 0, vec: 0, lc: 0 };
+  const part = { elevP: 0, elevW: 0, vec: 0, lc: 0, ww: 0 };
   const wantVectors = !opts.terrainOnly && (settings.water.enabled || settings.roads.enabled || settings.trees.enabled);
   const reportData = (msg?: string) => {
-    const done = (part.elevP + part.elevW + (wantVectors ? part.vec : 1) + part.lc) / 4;
+    const done = (part.elevP + part.elevW + (wantVectors ? part.vec : 1) + part.lc + part.ww) / 5;
     progress('data', done * STAGES.data, msg);
   };
   reportData('Fetching elevation, map data and land cover');
@@ -123,6 +127,26 @@ export async function runBuild(
     return undefined;
   });
 
+  // Coarse sea, lake and river outlines for the whole world area, so water continues across the
+  // playable border and the world map is classified correctly. Optional.
+  const worldWaterP: Promise<WorldWater | undefined> = !settings.water.enabled
+    ? Promise.resolve(undefined)
+    : withTimeout(
+        loadWorldWater(frame, fetch, (_s, f) => {
+          part.ww = f;
+          reportData('Fetching water outlines for the world map');
+        }),
+        opts.terrainOnly ? WORLD_WATER_PREVIEW_MS : WORLD_WATER_BUDGET_MS,
+        'timeout',
+      ).catch((e) => {
+        if (!opts.terrainOnly) {
+          warnings.push(
+            `Water outlines for the surrounding world map could not be fetched (${errText(e)}). Water outside the playable area is estimated from elevation only.`,
+          );
+        }
+        return undefined;
+      });
+
   // climate is small and optional; never let it block or fail the build
   const climateP: Promise<ClimateProfile | undefined> =
     !opts.terrainOnly && (settings.climate.enabled || settings.trees.enabled)
@@ -132,7 +156,7 @@ export async function runBuild(
         })
       : Promise.resolve(undefined);
 
-  const [playableElev, worldElev, vectors, landcover] = await Promise.all([
+  const [playableElev, worldElev, vectors, landcover, worldWater] = await Promise.all([
     elevPlayable,
     elevWorld,
     vectorsP.then((v) => {
@@ -142,6 +166,10 @@ export async function runBuild(
     landcoverP.then((l) => {
       part.lc = 1;
       return l;
+    }),
+    worldWaterP.then((w) => {
+      part.ww = 1;
+      return w;
     }),
   ]);
 
@@ -160,6 +188,7 @@ export async function runBuild(
       worldElev,
       vectors: settings.water.enabled ? vectors : undefined,
       landcover: settings.water.enabled ? landcover : undefined,
+      worldWater,
     },
     (_s, f, msg) => progress('terrain', STAGES.data + f * STAGES.terrain, msg ?? 'Shaping terrain'),
   );

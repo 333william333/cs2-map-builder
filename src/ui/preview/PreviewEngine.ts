@@ -28,13 +28,16 @@ import {
   type GpuShared,
   type Prepared,
 } from './sceneBuilders';
-import { startRender, type RenderJob, type RenderOptions, type RenderProgress } from './renderMode';
+import { LabelLayer } from './roadLabels';
 
 export type Layers = AppState['layers'];
 /** Preview-only layers that are not in the store. */
 export interface ExtraLayers {
   zones: boolean;
   houses: boolean;
+  /** reference only: tint the ground by land cover */
+  landcover: boolean;
+  names: boolean;
 }
 type LayerKey = 'terrain' | 'border' | 'world' | 'water' | 'roads' | 'trees' | 'grid' | 'startTile' | 'zones' | 'houses' | 'connections';
 
@@ -64,13 +67,15 @@ export class PreviewEngine {
   private dirty = true;
   private disposed = false;
   private contextLost = false;
-  private rendering = false;
-  private renderJob: RenderJob | null = null;
+  private suspended = false;
+  private pending: BuildResult | null = null;
+  private readonly landcover = { value: 0 };
+  private readonly labels: LabelLayer;
   private prepared: Prepared | null = null;
   private gpu: GpuShared | null = null;
   private result: BuildResult | null = null;
   private layers: Layers = { water: true, roads: true, trees: true, grid: true, world: true, startTile: true };
-  private extra: ExtraLayers = { zones: false, houses: false };
+  private extra: ExtraLayers = { zones: false, houses: false, landcover: false, names: false };
   private objs: Partial<Record<LayerKey, THREE.Object3D | null>> = {};
   private hour = DEFAULT_HOUR;
   private cssHeight = 1;
@@ -117,6 +122,7 @@ export class PreviewEngine {
 
     this.resetView();
 
+    this.labels = new LabelLayer(container);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
     document.addEventListener('visibilitychange', this.onVisibility);
@@ -129,10 +135,13 @@ export class PreviewEngine {
   // ------------------------------------------------------------ public API
 
   setResult(result: BuildResult | null): void {
+    if (this.suspended) {
+      this.pending = result;
+      return;
+    }
     if (result === this.result) return;
     const prevSel = this.result?.selection;
     this.result = result;
-    this.cancelRender();
     this.clearContent();
     this.prepared = result ? prepareResult(result) : null;
     if (this.prepared) {
@@ -142,6 +151,7 @@ export class PreviewEngine {
       this.ensure('terrain');
       this.ensure('border');
     }
+    this.labels.setData(this.prepared?.result.roads, this.prepared ? this.prepared.groundAt : () => 0);
     this.applyLayers();
     // keep the camera when only the same selection was rebuilt
     const sel = result?.selection;
@@ -158,6 +168,8 @@ export class PreviewEngine {
 
   setExtraLayers(extra: ExtraLayers): void {
     this.extra = extra;
+    this.landcover.value = extra.landcover ? 1 : 0;
+    this.labels.visible = extra.names;
     this.applyLayers();
     this.dirty = true;
   }
@@ -218,44 +230,41 @@ export class PreviewEngine {
     return this.layers.startTile;
   }
 
-  /** Starts the high-quality render of the current view. */
-  render(opts: Omit<RenderOptions, 'exposure'>, onProgress: (p: RenderProgress) => void): RenderJob | null {
-    const p = this.prepared;
-    if (!p || this.contextLost) return null;
-    this.cancelRender();
-    this.rendering = true;
-    const job = startRender(
-      {
-        renderer: this.renderer,
-        camera: this.camera,
-        prepared: p,
-        layers: this.layers,
-        isContextLost: () => this.contextLost || this.disposed,
-      },
-      { ...opts, exposure: EXPOSURE },
-      onProgress,
-    );
-    this.renderJob = job;
-    const finish = (): void => {
-      if (this.renderJob === job) {
-        this.renderJob = null;
-        this.rendering = false;
-        this.dirty = true;
-        this.resize();
-      }
-    };
-    job.promise.then(finish, finish);
-    return job;
+  /**
+   * Frees the GPU scene while the game view is open (it has its own renderer) and stops drawing.
+   * Results that arrive meanwhile are kept and shown on resume().
+   */
+  suspend(): void {
+    if (this.suspended) return;
+    this.pending = this.result;
+    this.suspended = true;
+    this.clearContent();
+    this.prepared = null;
+    this.result = null;
+    this.labels.setData(undefined, () => 0);
   }
 
-  cancelRender(): void {
-    this.renderJob?.cancel();
+  resume(): void {
+    if (!this.suspended) return;
+    this.suspended = false;
+    const cam = this.camera.position.clone();
+    const target = this.controls.target.clone();
+    const r = this.pending;
+    this.pending = null;
+    const same = r !== null;
+    this.setResult(r);
+    if (same) {
+      this.camera.position.copy(cam);
+      this.controls.target.copy(target);
+      this.controls.update();
+    }
+    this.dirty = true;
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.cancelRender();
+    this.labels.dispose();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.resizeObserver.disconnect();
@@ -290,7 +299,7 @@ export class PreviewEngine {
 
   private ctx(): BuildCtx | null {
     if (!this.prepared || !this.gpu) return null;
-    return { p: this.prepared, atm: this.atm, gpu: this.gpu, pxScale: this.pxScale };
+    return { p: this.prepared, atm: this.atm, gpu: this.gpu, pxScale: this.pxScale, landcover: this.landcover };
   }
 
   /** Builds the object of a layer on first use (lazy), returns it. */
@@ -356,7 +365,6 @@ export class PreviewEngine {
   private readonly onContextLost = (e: Event): void => {
     e.preventDefault();
     this.contextLost = true;
-    this.cancelRender();
     this.onContextChange?.(true);
   };
 
@@ -380,11 +388,17 @@ export class PreviewEngine {
     if (this.disposed || document.hidden) return;
     this.controls.update();
     this.constrainCamera();
-    if (this.dirty && !this.rendering && !this.contextLost) {
+    if (this.dirty && !this.suspended && !this.contextLost) {
       this.dirty = false;
       this.updatePlanes();
       this.sky.position.copy(this.camera.position);
       this.renderer.render(this.scene, this.camera);
+      this.labels.update({
+        project: (x, y, z, out) => this.project(new THREE.Vector3(x, y, z), out),
+        camera: this.camera.position,
+        width: this.container.clientWidth,
+        height: this.container.clientHeight,
+      });
       this.emitView();
       this.onFrame?.();
     }
