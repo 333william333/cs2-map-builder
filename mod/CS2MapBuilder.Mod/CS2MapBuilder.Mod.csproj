@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Game-side mod assembly (net48, C# 9), built WITHOUT the official modding toolchain:
+    references the game's Managed DLLs by HintPath, never copies them (Private=false).
+    No Burst, no source generators: all ECS work is main-thread EntityManager code.
+    The Package/ folder has no game dependencies (only Newtonsoft.Json, which the game ships),
+    and is compiled a second time into CS2MapBuilder.PackageCheck for tests outside the game.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>CS2MapBuilder</RootNamespace>
+    <AssemblyName>CS2MapBuilder.Mod</AssemblyName>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <GameReference Include="Game;Colossal.Core;Colossal.Logging;Colossal.IO.AssetDatabase;Colossal.UI.Binding;Colossal.Localization;Colossal.PSI.Common;Colossal.Mathematics;Colossal.Collections;UnityEngine.CoreModule;Unity.Burst;Unity.Collections;Unity.Entities;Unity.Mathematics;Newtonsoft.Json;netstandard" />
+    <Reference Include="@(GameReference)">
+      <HintPath>$(ManagedPath)\%(Identity).dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Update="System"><Private>false</Private></Reference>
+    <Reference Update="System.Core"><Private>false</Private></Reference>
+    <Reference Include="System.IO.Compression"><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <Target Name="CheckManagedPath" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(ManagedPath)\Game.dll')" Text="Game.dll not found in ManagedPath '$(ManagedPath)'. Pass -p:ManagedPath=&lt;...\Cities2_Data\Managed&gt; (build.ps1 -GamePath does this)." />
+  </Target>
+
+</Project>

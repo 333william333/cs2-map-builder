@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0e1317;
+  --color-surface: #161d23;
+  --color-surface-2: #1e272f;
+  --color-line: #2a353f;
+  --color-text: #e6edf3;
+  --color-muted: #8b98a5;
+  --color-accent: #4fd1b5;
+  --color-warn: #e5b454;
+  --color-danger: #ef6b6b;
+  --font-sans: system-ui, sans-serif;
+  --radius-panel: 10px;
+  --radius-control: 8px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* The app is a fixed full-window tool: only inner panels scroll, never the document. */
+html {
+  overflow: hidden;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}

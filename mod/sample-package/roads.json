@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    [1, 0, 0, 0, 0],
+    [2, 150, 0, 0, 0],
+    [3, -150, 0, 0, 0],
+    [4, 0, 150, 0, 0],
+    [5, 0, -150, 0, 0],
+    [6, 300, 0, 0, 0]
+  ],
+  "edges": [
+    { "id": 1, "a": 1, "b": 2, "cls": "secondary", "prefab": "road_medium_4lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Storgatan",
+      "bezier": [0, 0, 50, 0, 100, 0, 150, 0] },
+    { "id": 2, "a": 3, "b": 1, "cls": "secondary", "prefab": "road_medium_4lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Storgatan",
+      "bezier": [-150, 0, -100, 0, -50, 0, 0, 0] },
+    { "id": 3, "a": 1, "b": 4, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Kyrkogatan",
+      "bezier": [0, 0, 0, 50, 0, 100, 0, 150] },
+    { "id": 4, "a": 5, "b": 1, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Kyrkogatan",
+      "bezier": [0, -150, 0, -100, 0, -50, 0, 0] },
+    { "id": 5, "a": 2, "b": 6, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Ågatan",
+      "bezier": [150, 0, 200, 30, 250, 30, 300, 0] }
+  ]
+}

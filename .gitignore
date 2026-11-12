@@ -1,0 +1,11 @@
+node_modules
+dist
+server-dist
+release
+.cache
+exports
+.claude
+mod/dist
+bin/
+obj/
+*.log

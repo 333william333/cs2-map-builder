@@ -1,0 +1,110 @@
+{
+  "name": "cs2-map-builder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "dev": "concurrently -n server,vite -c blue,green \"tsx watch server/index.ts\" \"vite\"",
+    "server": "tsx server/index.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
+    "express": "^5.3.0",
+    "fast-png": "^8.0.0",
+    "fflate": "^0.8.3",
+    "geotiff": "^3.0.5",
+    "kdbush": "^4.1.0",
+    "lucide-react": "^1.72.0",
+    "maplibre-gl": "^6.18.0",
+    "osmtogeojson": "^3.0.0-beta.5",
+    "pbf": "^5.1.2",
+    "polygon-clipping": "^0.15.7",
+    "rbush": "^4.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "simplify-js": "^1.2.4",
+    "three": "^0.187.0",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/express": "^5.0.6",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^26.6.6",
+    "@types/rbush": "^4.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "main": "electron/main.cjs",
+  "description": "Turn a real place on Earth into a Cities: Skylines II map (heightmap, roads, trees, water, climate).",
+  "author": "333william333",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/333william333/cs2-map-builder.git"
+  },
+  "homepage": "https://github.com/333william333/cs2-map-builder",
+  "build": {
+    "appId": "com.333william333.cs2mapbuilder",
+    "productName": "CS2 Map Builder",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/main.cjs",
+      "dist/**",
+      "server-dist/**",
+      "package.json",
+      "!node_modules/**"
+    ],
+    "asar": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CS2 Map Builder",
+      "artifactName": "CS2-Map-Builder-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "CS2-Map-Builder-Portable-${version}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "format": "cs2mapbuilder",
+  "version": 1,
+  "name": "sample-package",
+  "selection": { "centerLat": 59.8586, "centerLon": 17.6389, "sizeMeters": 14336, "rotationDeg": 0 },
+  "scale": { "horizontal": 1.0, "vertical": 1.0 },
+  "heightScale": 1000,
+  "seaLevel": 0,
+  "hasSea": false,
+  "baseElevation": 0,
+  "theme": "european",
+  "startTile": { "col": 11, "row": 11 },
+  "counts": { "nodes": 6, "edges": 5, "trees": 12, "waterSources": 1 },
+  "netPrefabs": {
+    "road_medium_4lane": "Medium Road",
+    "road_small_2lane": "Small Road"
+  },
+  "treePrefabs": {
+    "birch": "BirchTree01",
+    "pine": "PineTree01",
+    "oak": "OakTree01"
+  },
+  "treeSpecies": ["birch", "pine", "oak"],
+  "warnings": ["hand-made sample: no heightmap, world map or resource maps"],
+  "attribution": "hand-made sample, no external data"
+}

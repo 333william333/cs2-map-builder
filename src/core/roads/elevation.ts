@@ -1,0 +1,227 @@
+/**
+ * Node ground heights and elevations: bridges lifted, tunnels lowered, with ramps that
+ * propagate through neighbouring nodes at a bounded gradient, and vertical clearance at
+ * grade-separated crossings.
+ */
+import type { HeightGrid, TerrainResult } from '../types';
+import {
+  GEN_BRIDGE_ELEV, GEN_RAMP_GRADE, GEN_TUNNEL_DEPTH, GEN_VERTICAL_CLEARANCE, levelKey, levelRank,
+} from './params';
+import { polyLength, segIntersect } from './geom';
+import { SegGrid } from './spatial';
+import type { WNet } from './segment';
+
+export function sampleHeight(grid: HeightGrid, x: number, z: number): number {
+  const N = grid.size;
+  const cell = grid.extentM / N;
+  let fc = (x + grid.extentM / 2) / cell - 0.5;
+  let fr = (grid.extentM / 2 - z) / cell - 0.5;
+  fc = Math.max(0, Math.min(N - 1, fc));
+  fr = Math.max(0, Math.min(N - 1, fr));
+  const c0 = Math.floor(fc);
+  const r0 = Math.floor(fr);
+  const c1 = Math.min(N - 1, c0 + 1);
+  const r1 = Math.min(N - 1, r0 + 1);
+  const tx = fc - c0;
+  const tz = fr - r0;
+  const d = grid.data;
+  const a = d[r0 * N + c0] * (1 - tx) + d[r0 * N + c1] * tx;
+  const b = d[r1 * N + c0] * (1 - tx) + d[r1 * N + c1] * tx;
+  return a * (1 - tz) + b * tz;
+}
+
+function waterAt(terrain: TerrainResult, x: number, z: number): number {
+  const N = terrain.playable.size;
+  const ext = terrain.playable.extentM;
+  const cell = ext / N;
+  const c = Math.floor((x + ext / 2) / cell);
+  const r = Math.floor((ext / 2 - z) / cell);
+  if (c < 0 || r < 0 || c >= N || r >= N || !terrain.waterMask) return 0;
+  return terrain.waterMask[r * N + c] ?? 0;
+}
+
+/** binary heap keyed by value (max-heap when sign = 1, min-heap when sign = -1) */
+class Heap {
+  ids: number[] = [];
+  vs: number[] = [];
+  constructor(private sign: number) {}
+  push(id: number, v: number) {
+    this.ids.push(id);
+    this.vs.push(v * this.sign);
+    let i = this.ids.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.vs[p] >= this.vs[i]) break;
+      [this.vs[p], this.vs[i]] = [this.vs[i], this.vs[p]];
+      [this.ids[p], this.ids[i]] = [this.ids[i], this.ids[p]];
+      i = p;
+    }
+  }
+  pop(): [number, number] | null {
+    if (!this.ids.length) return null;
+    const id = this.ids[0];
+    const v = this.vs[0] * this.sign;
+    const li = this.ids.pop()!;
+    const lv = this.vs.pop()!;
+    if (this.ids.length) {
+      this.ids[0] = li;
+      this.vs[0] = lv;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < this.vs.length && this.vs[l] > this.vs[m]) m = l;
+        if (r < this.vs.length && this.vs[r] > this.vs[m]) m = r;
+        if (m === i) break;
+        [this.vs[m], this.vs[i]] = [this.vs[i], this.vs[m]];
+        [this.ids[m], this.ids[i]] = [this.ids[i], this.ids[m]];
+        i = m;
+      }
+    }
+    return [id, v];
+  }
+}
+
+/**
+ * Returns [ground, elevation] per work node.
+ */
+export function assignElevations(net: WNet, terrain: TerrainResult): { ground: Float64Array; elev: Float64Array } {
+  const nN = net.nodes.length;
+  const ground = new Float64Array(nN);
+  for (let i = 0; i < nN; i++) ground[i] = sampleHeight(terrain.playable, net.nodes[i].x, net.nodes[i].z);
+  const adj: number[][] = net.nodes.map(() => []);
+  const elen: number[] = [];
+  net.edges.forEach((e, k) => {
+    elen[k] = polyLength(e.pts);
+    if (!e.alive) return;
+    adj[e.a].push(k);
+    adj[e.b].push(k);
+  });
+  // lower bounds for bridges, upper bounds for tunnels (absolute heights)
+  const lowB = new Float64Array(nN).fill(-Infinity);
+  const upT = new Float64Array(nN).fill(Infinity);
+  const chainRef = new Map<number, number>();
+  for (const [cid, [a, b]] of net.chainEnds) chainRef.set(cid, Math.min(ground[a], ground[b]));
+  net.edges.forEach((e) => {
+    if (!e.alive) return;
+    if (e.bridge) {
+      const ref = chainRef.get(e.chain) ?? -Infinity;
+      for (const n of [e.a, e.b]) {
+        let base = Math.max(ground[n], ref);
+        if (waterAt(terrain, net.nodes[n].x, net.nodes[n].z) === 1 && terrain.hasSea) base = Math.max(base, terrain.seaLevel);
+        lowB[n] = Math.max(lowB[n], base + GEN_BRIDGE_ELEV);
+      }
+    }
+    if (e.tunnel) {
+      for (const n of [e.a, e.b]) upT[n] = Math.min(upT[n], ground[n] - GEN_TUNNEL_DEPTH);
+    }
+  });
+
+  const propagate = (bound: Float64Array, sign: 1 | -1): Float64Array => {
+    const Y = Float64Array.from(bound);
+    const h = new Heap(sign);
+    for (let i = 0; i < nN; i++) if (Number.isFinite(Y[i])) h.push(i, Y[i]);
+    for (;;) {
+      const top = h.pop();
+      if (!top) break;
+      const [n, v] = top;
+      if (v !== Y[n]) continue;
+      for (const k of adj[n]) {
+        const e = net.edges[k];
+        const m = e.a === n ? e.b : e.a;
+        const cand = v - sign * GEN_RAMP_GRADE * elen[k];
+        // stop once the ramp has reached the terrain
+        if (sign > 0 ? cand <= ground[m] : cand >= ground[m]) continue;
+        if (sign > 0 ? cand > Y[m] : cand < Y[m]) {
+          Y[m] = cand;
+          h.push(m, cand);
+        }
+      }
+    }
+    return Y;
+  };
+
+  let YB = propagate(lowB, 1);
+  let YT = propagate(upT, -1);
+  const elevOf = (i: number) => {
+    let e = 0;
+    if (Number.isFinite(YB[i]) && YB[i] > ground[i]) e += YB[i] - ground[i];
+    if (Number.isFinite(YT[i]) && YT[i] < ground[i]) e += YT[i] - ground[i];
+    return e;
+  };
+
+  // vertical clearance at grade-separated crossings
+  const idx = new SegGrid(48);
+  net.edges.forEach((e, k) => {
+    if (!e.alive) return;
+    for (let i = 0; i + 1 < e.pts.length; i++) idx.add(e.pts[i][0], e.pts[i][1], e.pts[i + 1][0], e.pts[i + 1][1], k, i);
+  });
+  const crossings: { up: number; lo: number; fu: number; fl: number }[] = [];
+  net.edges.forEach((e, k) => {
+    if (!e.alive) return;
+    const lenE = elen[k];
+    let acc = 0;
+    for (let i = 0; i + 1 < e.pts.length; i++) {
+      const [ax, az] = e.pts[i];
+      const [bx, bz] = e.pts[i + 1];
+      const sl = Math.hypot(bx - ax, bz - az);
+      idx.query(Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz), (sid) => {
+        const o = idx.owner(sid);
+        if (o <= k) return;
+        const f = net.edges[o];
+        if (levelKey(e) === levelKey(f)) return;
+        if (f.a === e.a || f.a === e.b || f.b === e.a || f.b === e.b) return;
+        const [cx, cz, dx, dz] = idx.get(sid);
+        const r = segIntersect(ax, az, bx, bz, cx, cz, dx, dz);
+        if (!r) return;
+        let accF = 0;
+        const si = idx.aux(sid);
+        for (let q = 0; q < si; q++) accF += Math.hypot(f.pts[q + 1][0] - f.pts[q][0], f.pts[q + 1][1] - f.pts[q][1]);
+        const fe = (acc + r[0] * sl) / lenE;
+        const ff = (accF + r[1] * Math.hypot(dx - cx, dz - cz)) / elen[o];
+        if (levelRank(e) >= levelRank(f)) crossings.push({ up: k, lo: o, fu: fe, fl: ff });
+        else crossings.push({ up: o, lo: k, fu: ff, fl: fe });
+      });
+      acc += sl;
+    }
+  });
+  for (let iter = 0; iter < 4 && crossings.length; iter++) {
+    let changed = false;
+    const Yat = (k: number, f: number) => {
+      const e = net.edges[k];
+      const ya = ground[e.a] + elevOf(e.a);
+      const yb = ground[e.b] + elevOf(e.b);
+      return ya + (yb - ya) * f;
+    };
+    for (const c of crossings) {
+      const deficit = Yat(c.lo, c.fl) + GEN_VERTICAL_CLEARANCE - Yat(c.up, c.fu);
+      if (deficit <= 0.01) continue;
+      const up = net.edges[c.up];
+      const lo = net.edges[c.lo];
+      if (up.bridge || !lo.tunnel) {
+        for (const n of [up.a, up.b]) {
+          const y = ground[n] + elevOf(n) + deficit + 0.5;
+          if (y > lowB[n]) {
+            lowB[n] = y;
+            changed = true;
+          }
+        }
+      } else {
+        for (const n of [lo.a, lo.b]) {
+          const y = ground[n] + elevOf(n) - deficit - 0.5;
+          if (y < upT[n]) {
+            upT[n] = y;
+            changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) break;
+    YB = propagate(lowB, 1);
+    YT = propagate(upT, -1);
+  }
+  const elev = new Float64Array(nN);
+  for (let i = 0; i < nN; i++) elev[i] = Math.round(elevOf(i) * 100) / 100;
+  return { ground, elev };
+}

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Console check for the package reader, outside the game. Compiles the mod's pure Package/ sources directly
+    (same code that runs in game) and references the game's Newtonsoft.Json (copied to this tool's bin only,
+    never to mod/dist). Targets .NET 10 because .NET Framework rejects the game's Newtonsoft.Json strong name
+    outside the game; the Package/ sources themselves are plain C# 9 that also compile for net48 (the mod).
+      PackageCheck selftest [sample-package-dir]
+      PackageCheck check <package-dir>
+      PackageCheck make-marker <out-dir>
+      PackageCheck make-trees <out-dir> <count>
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CS2MapBuilder.PackageCheck</RootNamespace>
+    <AssemblyName>PackageCheck</AssemblyName>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\CS2MapBuilder.Mod\Package\**\*.cs" Link="Package\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(ManagedPath)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

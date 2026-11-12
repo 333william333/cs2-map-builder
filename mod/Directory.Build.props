@@ -1,0 +1,15 @@
+<Project>
+  <!-- Common settings for every .NET project under mod/. -->
+  <PropertyGroup>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <Version>0.1.0</Version>
+    <Company>CS2MapBuilder</Company>
+    <Product>CS2 Map Builder importer</Product>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Steam default; override with -p:ManagedPath=... (build.ps1 does this from -GamePath). -->
+    <ManagedPath Condition="'$(ManagedPath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed</ManagedPath>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,7 @@
+{
+  "seaLevel": 0,
+  "hasSea": false,
+  "sources": [
+    { "kind": "lake", "x": 600, "z": 600, "radius": 60, "level": 0 }
+  ]
+}
