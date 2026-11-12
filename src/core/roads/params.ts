@@ -84,6 +84,12 @@ export interface Attr {
   name?: string;
   ref?: string;
   unpaved?: boolean;
+  /** extra structure levels (each 9 m deeper / higher) to pass another tunnel or bridge */
+  stack?: number;
+  /** roundabout ring id (detected on the raw ways) */
+  ring?: number;
+  /** geometry built on purpose (roundabout ring): later stages must not reshape it */
+  fixed?: boolean;
   /** produced by merging two carriageways / tracks */
   merged: boolean;
   /** source way id (for deterministic tie-breaks) */
@@ -151,6 +157,16 @@ export const PREFAB_WIDTH: Record<NetPrefab, number> = {
 /** required centre-line distance between two unconnected same-level edges */
 export function clearance(a: NetPrefab, b: NetPrefab): number {
   return Math.max(MIN_NODE_GAP, (PREFAB_WIDTH[a] + PREFAB_WIDTH[b]) / 2 + 6);
+}
+
+/** two tunnels side by side (twin bores) only need their own widths and a rock pillar */
+export function tunnelClearance(a: NetPrefab, b: NetPrefab): number {
+  return Math.max(16, (PREFAB_WIDTH[a] + PREFAB_WIDTH[b]) / 2 + 2);
+}
+
+/** clearance between two same-level chains / edges, by level */
+export function levelClearance(a: NetPrefab, b: NetPrefab, bothTunnel: boolean): number {
+  return bothTunnel ? tunnelClearance(a, b) : clearance(a, b);
 }
 
 /** minimum curve radius accepted by the validator */

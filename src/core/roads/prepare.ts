@@ -4,9 +4,9 @@
  */
 import type { Pt, RawWay, RoadClass, RoadSettings } from '../types';
 import {
-  type Attr, HALF, ROAD_RANK, choosePrefab, clearance, defaultLanes, family, isRailFamily, levelKey,
+  type Attr, HALF, ROAD_RANK, choosePrefab, clearance, defaultLanes, family, isRailFamily, levelKey, tunnelClearance,
 } from './params';
-import { cumLen, pointAt, pointSegDist2, polyLength, simplifyDP, subPolyline, unit } from './geom';
+import { cumLen, dist, pointAt, pointSegDist2, polyLength, resample, simplifyDP, subPolyline, unit, vertexTurns } from './geom';
 import { SegGrid } from './spatial';
 
 export interface PWay {
@@ -135,6 +135,150 @@ export function flattenShortStructures(ways: PWay[], minLen = 30): void {
   });
 }
 
+// ---------------------------------------------------------------- roundabout detection
+
+export interface DetectedRing {
+  id: number;
+  /** centre and mean radius in game metres */
+  cx: number;
+  cz: number;
+  r: number;
+  arms: number;
+  tagged: boolean;
+}
+
+/**
+ * Find roundabouts on the raw ways before anything merges or smooths them: OSM-tagged rings and
+ * closed, round, directed loops of one-way pieces (also split across several ways and tile seams)
+ * with circumference 40..400 real metres and at least three arms. Their pieces get
+ * `roundabout` and a `ring` id so later stages keep them intact.
+ */
+export function detectRoundabouts(ways: PWay[], scale: number): DetectedRing[] {
+  const SNAP = 3;
+  const maxPerim = 400 * scale;
+  const minPerim = 40 * scale;
+  const cand: number[] = [];
+  ways.forEach((w, i) => {
+    if (family(w.at.cls) !== 'road' || w.at.link || w.at.cls === 'pedestrian') return;
+    if (w.at.bridge || w.at.tunnel) return;
+    if (polyLength(w.pts) > maxPerim) return;
+    cand.push(i);
+  });
+  // piece ends on a coarse grid; vector tiles carry neither the roundabout tag nor one-way
+  const cell = (x: number) => Math.floor(x / SNAP);
+  const ends = new Map<string, { i: number; end: 0 | 1 }[]>();
+  for (const i of cand) {
+    const p = ways[i].pts;
+    for (const end of [0, 1] as const) {
+      const q = end === 0 ? p[0] : p[p.length - 1];
+      const k = `${cell(q[0])},${cell(q[1])}`;
+      const arr = ends.get(k);
+      if (arr) arr.push({ i, end });
+      else ends.set(k, [{ i, end }]);
+    }
+  }
+  const near = (p: Pt) => {
+    const out: { i: number; end: 0 | 1 }[] = [];
+    const cx = cell(p[0]);
+    const cz = cell(p[1]);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      for (const e of ends.get(`${cx + dx},${cz + dz}`) ?? []) {
+        const pts = ways[e.i].pts;
+        const q = e.end === 0 ? pts[0] : pts[pts.length - 1];
+        if (Math.hypot(q[0] - p[0], q[1] - p[1]) <= SNAP) out.push(e);
+      }
+    }
+    return out;
+  };
+  const endGrid = new SegGrid(32);
+  ways.forEach((w, i) => {
+    for (const p of [w.pts[0], w.pts[w.pts.length - 1]]) endGrid.add(p[0], p[1], p[0], p[1], i);
+  });
+  const used = new Set<number>();
+  const rings: DetectedRing[] = [];
+  for (const s of cand) {
+    if (used.has(s)) continue;
+    // walk the smoothest continuation (pieces may be used backwards unless one-way)
+    const path: { i: number; rev: boolean }[] = [{ i: s, rev: false }];
+    const oriented = (k: { i: number; rev: boolean }) => (k.rev ? ways[k.i].pts.slice().reverse() : ways[k.i].pts);
+    let len = polyLength(ways[s].pts);
+    const start = ways[s].pts[0];
+    let closed = ways[s].pts.length > 3 && dist(ways[s].pts[ways[s].pts.length - 1], start) <= SNAP;
+    for (let step = 0; step < 16 && !closed && len <= maxPerim; step++) {
+      const cp = oriented(path[path.length - 1]);
+      const end = cp[cp.length - 1];
+      const a = cp[cp.length - 2];
+      const din = unit(end[0] - a[0], end[1] - a[1]);
+      let best: { i: number; rev: boolean } | null = null;
+      let bd = Infinity;
+      for (const e of near(end)) {
+        if (used.has(e.i) || path.some((k) => k.i === e.i)) continue;
+        const o = ways[e.i];
+        if (o.at.cls !== ways[s].at.cls) continue;
+        const rev = e.end === 1;
+        if (rev && o.at.oneway) continue;
+        const op = rev ? o.pts.slice().reverse() : o.pts;
+        const dout = unit(op[1][0] - op[0][0], op[1][1] - op[0][1]);
+        const dev = Math.acos(Math.max(-1, Math.min(1, din[0] * dout[0] + din[1] * dout[1])));
+        if (dev < bd) {
+          bd = dev;
+          best = { i: e.i, rev };
+        }
+      }
+      if (!best || bd > Math.PI / 3) break;
+      path.push(best);
+      len += polyLength(ways[best.i].pts);
+      const bp = oriented(best);
+      if (dist(bp[bp.length - 1], start) <= SNAP) closed = true;
+    }
+    if (!closed || len > maxPerim || len < minPerim) continue;
+    const pts: Pt[] = [];
+    for (const k of path) for (const q of oriented(k)) pts.push(q);
+    const rs = resample(pts, Math.max(1, len / 64));
+    let cx = 0;
+    let cz = 0;
+    for (const q of rs) {
+      cx += q[0];
+      cz += q[1];
+    }
+    cx /= rs.length;
+    cz /= rs.length;
+    const rad = rs.map((q) => Math.hypot(q[0] - cx, q[1] - cz));
+    const mean = rad.reduce((x, y) => x + y, 0) / rad.length;
+    const sd = Math.sqrt(rad.reduce((x, y) => x + (y - mean) ** 2, 0) / rad.length);
+    const tagged = path.some((k) => ways[k.i].at.roundabout);
+    const turns = vertexTurns(rs);
+    let maxTurn = 0;
+    for (let i = 1; i + 1 < rs.length; i++) maxTurn = Math.max(maxTurn, turns[i]);
+    if (mean <= 0 || sd / mean > (tagged ? 0.35 : 0.2)) continue;
+    if (!tagged && maxTurn > (35 * Math.PI) / 180) continue;
+    const ringSet = new Set(path.map((k) => k.i));
+    const arms = new Set<number>();
+    endGrid.query(cx - mean - 6, cz - mean - 6, cx + mean + 6, cz + mean + 6, (sid) => {
+      const o = endGrid.owner(sid);
+      if (ringSet.has(o)) return;
+      const [x, z] = endGrid.get(sid);
+      if (Math.abs(Math.hypot(x - cx, z - cz) - mean) <= Math.max(4, 0.25 * mean)) arms.add(o);
+    });
+    if (!tagged && arms.size < 3) continue;
+    // travel direction: one-way pieces decide, otherwise counter-clockwise (right-hand traffic)
+    let area = 0;
+    for (let i = 0; i + 1 < pts.length; i++) area += (pts[i][0] - cx) * (pts[i + 1][1] - cz) - (pts[i + 1][0] - cx) * (pts[i][1] - cz);
+    const anyOneway = path.some((k) => ways[k.i].at.oneway);
+    const flip = !anyOneway && area < 0;
+    const id = rings.length;
+    for (const k of path) {
+      used.add(k.i);
+      const w = ways[k.i];
+      const rev = k.rev !== flip;
+      if (rev) w.pts = w.pts.slice().reverse();
+      w.at = { ...w.at, roundabout: true, oneway: true, ring: id };
+    }
+    rings.push({ id, cx, cz, r: mean, arms: arms.size, tagged });
+  }
+  return rings;
+}
+
 // ---------------------------------------------------------------- parallel collapse
 
 const STEP = 8;
@@ -157,6 +301,8 @@ function pairKind(a: Attr, b: Attr): PairKind {
 }
 
 function mergeDist(a: Attr, b: Attr): number {
+  // twin tunnel tubes only merge when they cannot both be built side by side
+  if (a.tunnel && b.tunnel) return tunnelClearance(choosePrefab(a), choosePrefab(b)) + 3;
   return clearance(choosePrefab(a), choosePrefab(b)) + 3;
 }
 

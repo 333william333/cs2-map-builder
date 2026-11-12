@@ -8,7 +8,7 @@
  *  - different families (road beside rail): the minor chain is displaced sideways.
  */
 import type { Pt } from '../types';
-import { type Attr, choosePrefab, clearance, family, levelKey, ROAD_RANK } from './params';
+import { type Attr, choosePrefab, family, levelClearance, levelKey, ROAD_RANK } from './params';
 import { cumLen, dist, pointAt, pointSegDist2, projectSeg, unit } from './geom';
 import type { Graph } from './graph';
 import { SegGrid } from './spatial';
@@ -207,8 +207,8 @@ export function fixPair(g: Graph, c1: number, c2: number, extra = 0): boolean {
   const [minor, major] = isMajor(g, c1, c2) ? [c2, c1] : [c1, c2];
   const C = g.chains[minor];
   const O = g.chains[major];
-  if (levelKey(C.at) !== levelKey(O.at)) return false;
-  const need = clearance(prefabOf(C.at), prefabOf(O.at)) + 3 + extra;
+  if (C.at.fixed || O.at.fixed || levelKey(C.at) !== levelKey(O.at)) return false;
+  const need = levelClearance(prefabOf(C.at), prefabOf(O.at), C.at.tunnel && O.at.tunnel) + 3 + extra;
   const p = C.pts;
   const hits: (Hit | null)[] = new Array(p.length).fill(null);
   for (let i = 0; i < p.length; i++) {
@@ -275,7 +275,7 @@ export function resolveChainConflicts(g: Graph, maxPasses = 6): ConflictStats {
     let changed = false;
     for (const c of order) {
       const C = g.chains[c];
-      if (!C.alive) continue;
+      if (!C.alive || C.at.fixed) continue;
       if (pending && !pending.has(c)) continue;
       if (done.has(c)) {
         nextPending.add(c);
@@ -298,12 +298,12 @@ export function resolveChainConflicts(g: Graph, maxPasses = 6): ConflictStats {
             return;
           }
           const O = g.chains[o];
-          if (!O.alive || lvl.get(o) !== lv) return;
+          if (!O.alive || O.at.fixed || lvl.get(o) !== lv) return;
           const si = grid.aux(sid);
           if (si + 1 >= O.pts.length) return;
           const [ax, az, bx, bz] = grid.get(sid);
           if (O.pts[si][0] !== ax || O.pts[si][1] !== az) return; // stale
-          const need = clearance(pc, pf.get(o) ?? prefabOf(O.at)) + 2;
+          const need = levelClearance(pc, pf.get(o) ?? prefabOf(O.at), C.at.tunnel && O.at.tunnel) + 2;
           const d2 = pointSegDist2(x, z, ax, az, bx, bz);
           if (d2 >= need * need) return;
           // junction vicinity of a shared node is handled by acute / first-piece rules

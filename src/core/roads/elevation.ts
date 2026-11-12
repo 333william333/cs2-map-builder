@@ -98,26 +98,6 @@ export function assignElevations(net: WNet, terrain: TerrainResult): { ground: F
     adj[e.a].push(k);
     adj[e.b].push(k);
   });
-  // lower bounds for bridges, upper bounds for tunnels (absolute heights)
-  const lowB = new Float64Array(nN).fill(-Infinity);
-  const upT = new Float64Array(nN).fill(Infinity);
-  const chainRef = new Map<number, number>();
-  for (const [cid, [a, b]] of net.chainEnds) chainRef.set(cid, Math.min(ground[a], ground[b]));
-  net.edges.forEach((e) => {
-    if (!e.alive) return;
-    if (e.bridge) {
-      const ref = chainRef.get(e.chain) ?? -Infinity;
-      for (const n of [e.a, e.b]) {
-        let base = Math.max(ground[n], ref);
-        if (waterAt(terrain, net.nodes[n].x, net.nodes[n].z) === 1 && terrain.hasSea) base = Math.max(base, terrain.seaLevel);
-        lowB[n] = Math.max(lowB[n], base + GEN_BRIDGE_ELEV);
-      }
-    }
-    if (e.tunnel) {
-      for (const n of [e.a, e.b]) upT[n] = Math.min(upT[n], ground[n] - GEN_TUNNEL_DEPTH);
-    }
-  });
-
   const propagate = (bound: Float64Array, sign: 1 | -1): Float64Array => {
     const Y = Float64Array.from(bound);
     const h = new Heap(sign);
@@ -133,6 +113,10 @@ export function assignElevations(net: WNet, terrain: TerrainResult): { ground: F
         const cand = v - sign * GEN_RAMP_GRADE * elen[k];
         // stop once the ramp has reached the terrain
         if (sign > 0 ? cand <= ground[m] : cand >= ground[m]) continue;
+        // outside a structure a ramp only runs out: it never climbs a hillside into the street network
+        // (embankments may keep their height down a slope, up to the structure requirement)
+        if (!e.bridge && !e.tunnel && !Number.isFinite(bound[m]) &&
+          Math.abs(cand - ground[m]) > Math.max(Math.abs(v - ground[n]), GEN_TUNNEL_DEPTH) + 1e-6) continue;
         if (sign > 0 ? cand > Y[m] : cand < Y[m]) {
           Y[m] = cand;
           h.push(m, cand);
@@ -142,8 +126,53 @@ export function assignElevations(net: WNet, terrain: TerrainResult): { ground: F
     return Y;
   };
 
-  let YB = propagate(lowB, 1);
-  let YT = propagate(upT, -1);
+  // lower bounds for bridges, upper bounds for tunnels (absolute heights); portals move out while
+  // the road beyond them would still be deep under the terrain (or high above it)
+  let lowB = new Float64Array(nN);
+  let upT = new Float64Array(nN);
+  let YB: Float64Array = new Float64Array(nN);
+  let YT: Float64Array = new Float64Array(nN);
+  const chainRef = new Map<number, number>();
+  for (const [cid, [a, b]] of net.chainEnds) chainRef.set(cid, Math.min(ground[a], ground[b]));
+  for (let pass = 0; pass < 8; pass++) {
+  lowB = new Float64Array(nN).fill(-Infinity);
+  upT = new Float64Array(nN).fill(Infinity);
+  net.edges.forEach((e) => {
+    if (!e.alive) return;
+    if (e.bridge) {
+      const ref = chainRef.get(e.chain) ?? -Infinity;
+      for (const n of [e.a, e.b]) {
+        let base = Math.max(ground[n], ref);
+        if (waterAt(terrain, net.nodes[n].x, net.nodes[n].z) === 1 && terrain.hasSea) base = Math.max(base, terrain.seaLevel);
+        lowB[n] = Math.max(lowB[n], base + GEN_BRIDGE_ELEV + 9 * (e.stack ?? 0));
+      }
+    }
+    if (e.tunnel) {
+      for (const n of [e.a, e.b]) upT[n] = Math.min(upT[n], ground[n] - GEN_TUNNEL_DEPTH - 9 * (e.stack ?? 0));
+    }
+  });
+
+  YB = propagate(lowB, 1);
+  YT = propagate(upT, -1);
+  let extended = false;
+  net.edges.forEach((e, k) => {
+    if (!e.alive || e.bridge || e.tunnel) return;
+    if (adj[e.a].length > 2 || adj[e.b].length > 2) return;
+    for (const [n, m] of [[e.a, e.b], [e.b, e.a]]) {
+      if (Number.isFinite(upT[n]) && !Number.isFinite(lowB[m]) && ground[m] - (YT[n] + GEN_RAMP_GRADE * elen[k]) >= 8) {
+        e.tunnel = true;
+        extended = true;
+        return;
+      }
+      if (Number.isFinite(lowB[n]) && !Number.isFinite(upT[m]) && YB[n] - GEN_RAMP_GRADE * elen[k] - ground[m] >= 8) {
+        e.bridge = true;
+        extended = true;
+        return;
+      }
+    }
+  });
+  if (!extended) break;
+  }
   const elevOf = (i: number) => {
     let e = 0;
     if (Number.isFinite(YB[i]) && YB[i] > ground[i]) e += YB[i] - ground[i];
@@ -241,6 +270,33 @@ export function assignElevations(net: WNet, terrain: TerrainResult): { ground: F
     YT = propagate(upT, -1);
   }
   const elev = new Float64Array(nN);
-  for (let i = 0; i < nN; i++) elev[i] = Math.round(elevOf(i) * 100) / 100;
+  for (let i = 0; i < nN; i++) elev[i] = elevOf(i);
+  // ramps that still come out steeper than the terrain allows: pull the near-ground end along,
+  // spreading only as far as needed (structure nodes keep their own height)
+  const fixedNode = new Uint8Array(nN);
+  for (let i = 0; i < nN; i++) if (Number.isFinite(lowB[i]) || Number.isFinite(upT[i])) fixedNode[i] = 1;
+  for (let it = 0; it < 40; it++) {
+    let moved = false;
+    net.edges.forEach((e, k) => {
+      if (!e.alive || (elev[e.a] === 0 && elev[e.b] === 0)) return;
+      const ya = ground[e.a] + elev[e.a];
+      const yb = ground[e.b] + elev[e.b];
+      const lim = Math.max(GEN_RAMP_GRADE * 1.15 * elen[k], Math.abs(ground[e.b] - ground[e.a]));
+      const dy = yb - ya;
+      if (Math.abs(dy) <= lim + 0.02) return;
+      // move the end closer to the ground (or the one that is not a structure node)
+      let m = Math.abs(elev[e.a]) <= Math.abs(elev[e.b]) ? e.a : e.b;
+      if (fixedNode[m]) m = m === e.a ? e.b : e.a;
+      if (fixedNode[m]) return;
+      const other = m === e.a ? yb : ya;
+      const target = other + (m === e.a ? -1 : 1) * Math.sign(dy) * -lim * -1;
+      const ym = m === e.a ? other - Math.sign(dy) * lim : other + Math.sign(dy) * lim;
+      void target;
+      elev[m] = ym - ground[m];
+      moved = true;
+    });
+    if (!moved) break;
+  }
+  for (let i = 0; i < nN; i++) elev[i] = Math.round(elev[i] * 100) / 100;
   return { ground, elev };
 }

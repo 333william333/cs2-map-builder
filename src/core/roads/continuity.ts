@@ -45,6 +45,10 @@ export interface ContinuityReport {
   outDeadEnds: number;
   namedInShare: number;
   namedOutShare: number;
+  /** input structure length (paired carriageways counted half), the part kept as the same structure, output total */
+  structures: Record<'bridge' | 'tunnel', { expectedKm: number; keptKm: number; outKm: number }>;
+  /** lost structure km by the stage that lost it */
+  structureLoss: Record<string, number>;
 }
 
 /** routes are judged inside this square; the band outside it is where ways are cut back */
@@ -124,7 +128,11 @@ export function checkContinuity(
   net: RoadNetwork,
   settings: RoadSettings,
   snapshots?: StageSnapshot[],
+  /** roundabouts rebuilt as circles: their discs replace the real geometry and are not judged */
+  rings?: { cx: number; cz: number; r: number }[],
 ): ContinuityReport {
+  // the ring and its re-attached approaches (arm junctions move out with an enlarged ring)
+  const inRing = (p: Pt) => !!rings?.some((g) => Math.hypot(p[0] - g.cx, p[1] - g.cz) < g.r + 45);
   const ways = input.ways.filter((w) => classKept(w.cls, settings) && w.pts.length >= 2);
   const classes: Partial<Record<RoadClass, ClassContinuity>> = {};
   const C = (c: RoadClass) =>
@@ -203,6 +211,12 @@ export function checkContinuity(
   });
   const snapIdx = (snapshots ?? []).map((s) => ({ stage: s.stage, L: indexLines(s.lines) }));
 
+  const structures = { bridge: { expectedKm: 0, keptKm: 0, outKm: 0 }, tunnel: { expectedKm: 0, keptKm: 0, outKm: 0 } };
+  net.edges.forEach((e, k) => {
+    if (e.bridge) structures.bridge.outKm += elen[k] / 1000;
+    if (e.tunnel) structures.tunnel.outKm += elen[k] / 1000;
+  });
+  const structureLoss: Record<string, number> = {};
   const breaks: RouteBreak[] = [];
   let namedIn = 0;
   let totalIn = 0;
@@ -239,6 +253,7 @@ export function checkContinuity(
         const q0 = pointAt(piece, cum, Math.max(0, s - 3));
         const q1 = pointAt(piece, cum, Math.min(L, s + 3));
         const t = unit(q1[0] - q0[0], q1[1] - q0[1]);
+        let pairedHere = false;
         if (pairable(w)) {
           let hit = false;
           const rail = w.cls === 'rail';
@@ -252,8 +267,34 @@ export function checkContinuity(
             if (rail ? Math.abs(dot) > 0.8 && o > wi : dot < -0.8) hit = true;
           });
           if (hit) paired++;
+          pairedHere = hit;
+        }
+        if (inRing(p)) {
+          flush();
+          prevEdge = -1;
+          continue;
         }
         const e = nearest(out, p, t, w.cls, tol, w.bridge ? 1 : w.tunnel ? -1 : 0);
+        if ((w.bridge || w.tunnel) && i > 0) {
+          const sk = w.bridge ? structures.bridge : structures.tunnel;
+          const wgt = ((L / n) * (pairedHere ? 0.5 : 1)) / 1000;
+          sk.expectedKm += wgt;
+          if (e >= 0 && (w.bridge ? net.edges[e].bridge : net.edges[e].tunnel)) sk.keptKm += wgt;
+          else if (snapIdx.length) {
+            // first stage where this stretch stopped being the same structure
+            const want = w.bridge ? 1 : -1;
+            let stage = '?';
+            for (const { stage: st, L: SL } of snapIdx) {
+              const m = nearest(SL, p, t, w.cls, tol, want);
+              if (m < 0 || SL.lvl[m] !== want) {
+                stage = st;
+                break;
+              }
+            }
+            const key = (w.bridge ? 'bridge/' : 'tunnel/') + stage;
+            structureLoss[key] = (structureLoss[key] ?? 0) + wgt;
+          }
+        }
         const seg = L / n;
         if (e < 0) {
           if (!missStart) {
@@ -330,6 +371,8 @@ export function checkContinuity(
     outDeadEnds: outDead,
     namedInShare: totalIn ? namedIn / totalIn : 0,
     namedOutShare: totalOut ? namedOut / totalOut : 0,
+    structures,
+    structureLoss,
   };
 }
 

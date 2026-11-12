@@ -21,14 +21,14 @@ CS2 Map Builder turns a real place into a map for Cities: Skylines II. You mark 
 
 | | |
 |---|---|
-| **Real terrain** | 16-bit playable heightmap plus a world map for the surroundings, with adjustable height scaling, sea level and smoothing. |
-| **Water** | Lakes, rivers and the sea are carved into the terrain and turned into water sources. |
-| **Roads and rail** | The real OpenStreetMap network, cleaned up and simplified for the game, with a level-of-detail control. |
+| **Real terrain** | 16-bit playable heightmap plus a world map for the surroundings, with adjustable height scaling, sea level and smoothing. The preview colours the ground the way the game does (grass, cliffs, sand, snow). |
+| **Water** | Lakes, rivers and the sea are carved into the terrain and turned into water sources. One shared water model covers the playable area and its surroundings, so lakes, rivers and coasts continue seamlessly across the map border. |
+| **Roads and rail** | The real OpenStreetMap network, cleaned up for the game. Geometry is repaired rather than deleted, so roads stay connected. Road names and numbers are kept, real roundabouts are kept where they fit, and bridges and tunnels are preserved. A level-of-detail control thins the network on large areas. |
 | **Trees by biome** | Forest placement from land cover, with density and a tree budget so the game stays fast. |
 | **Climate and resources** | Temperature and rainfall from real data, plus fertile land, ore, oil and groundwater estimates. |
 | **Start tile and connections** | Suggested start tile and outside connections (road, rail, ship, air, power, water). |
-| **3D preview** | A live three.js view of the result, with a zoning grid and example houses to show real scale. |
-| **High-quality render** | Render a still image of the 3D view and change the time of day. |
+| **3D preview** | A live three.js view of the result, with a road names toggle, an optional land cover reference tint, and a zoning grid and example houses to show real scale. |
+| **Game view** | A full-window view of the complete map exactly as it will be imported: every tree, every road segment at its prefab width with junction surfaces, bridges with piers, tunnels with portals, and water at the exported levels. Explore it like the game, change the time of day and save a high-quality still image. |
 | **Manual editor** | A small 2D editor for playability tweaks: choose the start tile and add or remove connections. |
 | **Three export levels** | A complete package for the importer mod, heightmaps only, or a tracing overlay image. |
 
@@ -91,18 +91,22 @@ The settings panel on the right has sections for **Terrain** (height mode, sea l
 
 <img src="docs/media/editor.gif" alt="Animation: the manual editor dialog, choosing a start tile and adding a road connection at the map edge." width="900">
 
-### 4. Render
+### 4. Game view
 
-The **Render** button in the 3D view produces a high-quality image of the current camera view at up to 3840 by 2160. Move the time-of-day slider to relight the scene, then save the PNG.
+The **Render** button in the 3D view opens the **Game view**, a full-window view of the complete map built in full detail, exactly as it will be imported: every tree, every road segment at its prefab width with junction surfaces, bridges with piers, tunnels with portals, and water at the exported levels continuing into the surroundings. If no full build is loaded yet, it builds one first.
 
-<img src="docs/media/render.gif" alt="Animation: the render lightbox showing a high-quality render of Bergen, then the time-of-day slider being moved to an evening light." width="900">
+Move around like in the game: **WASD** or the arrow keys to move, **Q** and **E** to rotate, the mouse wheel to zoom, and right or middle mouse drag to orbit. The toolbar toggles **Trees**, **Roads**, **Water**, **Tunnels**, **Road names**, **Start tiles**, **Tile grid** and **Connections**, plus the illustrative **Zoning grid** and **Example houses** (off by default). The time-of-day slider relights the scene, the scale bar and counts show what is loaded, and **Save image** renders a high-quality still at up to 3840 by 2160.
+
+<img src="docs/media/gameview.gif" alt="Animation: the Game view flying from an overview of Uppsala down to a district and then to a motorway interchange at street level, with road names switched on." width="900">
 
 <details>
-<summary>Full-size render examples (Bergen, 1920 by 1080)</summary>
+<summary>Still images saved from the Game view (Uppsala, 1920 by 1080)</summary>
 
-<img src="docs/media/render-1080p.png" alt="High-quality 1920 by 1080 render of the Bergen map: a fjord, forested mountains, lakes and roads in afternoon light." width="900">
+<img src="docs/media/gameview-afternoon.png" alt="Game view still of Uppsala in the afternoon: a river, streets and trees seen from above." width="900">
 
-<img src="docs/media/render-evening.png" alt="The same render with the time-of-day slider moved to the evening." width="900">
+<img src="docs/media/gameview-evening.png" alt="The same view of Uppsala with the time of day set to the evening." width="900">
+
+<img src="docs/media/gameview-street.png" alt="Street-level view of a motorway interchange with bridges, lane markings and road names." width="900">
 
 </details>
 
@@ -133,6 +137,8 @@ Packages exported by the app are written to `%USERPROFILE%\AppData\LocalLow\Colo
 
 - **Ground colours cannot be painted freely in Cities: Skylines II.** The game decides ground appearance from climate, theme and height, so a satellite image cannot be used as a ground texture.
 - **No buildings are exported.** The map contains terrain, water, roads, rail, trees and resources. The houses in the preview are for scale only and are not part of any export.
+- **Some bridges, tunnels and roundabouts are still simplified** on very dense interchanges and at small scales.
+- **The Game view lays roads on the terrain.** The game itself levels the ground under roads, so the real result will look a little smoother.
 - **Elevation data is about 30 m resolution** in most of the world. Small hills and steep slopes are smoothed out, especially on small maps.
 - **Large areas get a thinned road network.** Minor roads are dropped so the map stays playable. The level of detail can be adjusted.
 - **Some data sources can be slow.** If the Overpass service does not answer in time, the app falls back to OpenFreeMap vector tiles, with slightly less detail.

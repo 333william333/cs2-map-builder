@@ -128,16 +128,17 @@ describe('parseOverpass', () => {
     expect(v.ways.map((w) => w.id)).toEqual([7]);
   });
 
-  it('skips rail yards and sidings below scale 0.8', () => {
+  it('simplifies rail yards to their through tracks (sidings always, spurs below scale 0.8)', () => {
     const json = {
       elements: [
         { type: 'way', id: 1, tags: { railway: 'rail', service: 'siding' }, geometry: [pt(0, 0), pt(0, 0.001)] },
         { type: 'way', id: 2, tags: { railway: 'rail' }, geometry: [pt(0, 0), pt(0, 0.001)] },
+        { type: 'way', id: 3, tags: { railway: 'rail', service: 'spur' }, geometry: [pt(0, 0), pt(0, 0.001)] },
       ],
     };
     const small = createFrame({ ...DEFAULT_SELECTION, sizeMeters: 20_000 });
     expect(parseOverpass(json as never, small, DEFAULT_SETTINGS).ways.map((w) => w.id)).toEqual([2]);
-    expect(parseOverpass(json as never, frame, DEFAULT_SETTINGS).ways.map((w) => w.id)).toEqual([1, 2]);
+    expect(parseOverpass(json as never, frame, DEFAULT_SETTINGS).ways.map((w) => w.id)).toEqual([2, 3]);
   });
 
   it('builds a multipolygon lake with a hole from several member ways', () => {

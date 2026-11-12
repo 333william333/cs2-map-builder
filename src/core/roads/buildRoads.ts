@@ -10,21 +10,21 @@
  */
 import type { Pt, RoadClass, RoadEdge, RoadNetwork, RoadNode, RoadSettings, TerrainResult, VectorData } from '../types';
 import { CLASS_INDEX } from './params';
-import { type PWay, collapseParallel, flattenShortStructures, prepareWays } from './prepare';
+import { type PWay, collapseParallel, detectRoundabouts, prepareWays } from './prepare';
 import { clipToPlayable } from './clip';
 import { type Graph, buildGraph } from './graph';
 import {
-  type RoundaboutStats, bridgeWater, computeImportance, contractShort, fixAcute, pruneStubs, removeFragments, roundabouts,
+  type RoundaboutStats, bridgeWater, computeImportance, inheritRampNames, contractShort, fixAcute, pruneStubs, removeFragments, roundabouts,
   smoothChains, snapDangles, straightenApproaches, thin,
 } from './generalize';
 import { type SegCache, segmentGraph, type WNet } from './segment';
 import { isMinorClass } from './generalize';
 import { type ConflictStats, resolveChainConflicts } from './conflicts';
 import { newRepairContext, repairRound } from './repair';
-import { fixStructureTransitions } from './structures';
+import { extendShortStructures, fixStructureTransitions } from './structures';
 
-const MAX_REPAIR_ROUNDS = 8;
-import { assignElevations } from './elevation';
+const MAX_REPAIR_ROUNDS = 12;
+import { assignElevations, sampleHeight } from './elevation';
 import { findViolations } from './validate';
 
 export { validateNetwork, findViolations } from './validate';
@@ -33,14 +33,20 @@ export interface BuildRoadsStats {
   stages: Record<string, number>;
   resolverIterations: number;
   droppedEdges: number;
+  /** last-resort deletions by class */
+  droppedByClass: Partial<Record<RoadClass, number>>;
+  dropLog: string[];
   /** violation kinds seen by the repair loop, per iteration */
   violations: Record<string, number>[];
   conflicts?: ConflictStats;
   structureFixes?: number;
+  shortStructures?: [number, number];
   roundabouts?: RoundaboutStats;
+  detectedRings?: number;
   repairActions?: number[];
   roundViolations?: Record<string, number>[];
   lastViolations?: string[];
+  firstViolations?: string[];
   roundTimes?: Record<string, number>;
   repairLog?: string[];
 }
@@ -54,14 +60,14 @@ export function lastBuildRoadsStats(): BuildRoadsStats | null {
 /** geometry after one pipeline stage, for continuity attribution */
 export interface StageSnapshot {
   stage: string;
-  lines: { pts: Pt[]; cls: RoadClass; comp: number; name?: string }[];
+  lines: { pts: Pt[]; cls: RoadClass; comp: number; name?: string; lvl?: number }[];
 }
 
 let trace: StageSnapshot[] | null = null;
 
 function snapWays(stage: string, ways: PWay[]) {
   if (!trace) return;
-  trace.push({ stage, lines: ways.map((w) => ({ pts: w.pts.map((p) => [p[0], p[1]] as Pt), cls: w.at.cls, comp: -1, name: w.at.name })) });
+  trace.push({ stage, lines: ways.map((w) => ({ pts: w.pts.map((p) => [p[0], p[1]] as Pt), cls: w.at.cls, comp: -1, name: w.at.name, lvl: w.at.bridge ? 1 : w.at.tunnel ? -1 : 0 })) });
 }
 
 function snapGraph(stage: string, g: Graph) {
@@ -75,7 +81,7 @@ function snapGraph(stage: string, g: Graph) {
   for (const id of live) parent[find(g.chains[id].a)] = find(g.chains[id].b);
   trace.push({
     stage,
-    lines: live.map((id) => ({ pts: g.chains[id].pts.map((p) => [p[0], p[1]] as Pt), cls: g.chains[id].at.cls, comp: find(g.chains[id].a), name: g.chains[id].at.name })),
+    lines: live.map((id) => ({ pts: g.chains[id].pts.map((p) => [p[0], p[1]] as Pt), cls: g.chains[id].at.cls, comp: find(g.chains[id].a), name: g.chains[id].at.name, lvl: g.chains[id].at.bridge ? 1 : g.chains[id].at.tunnel ? -1 : 0 })),
   });
 }
 
@@ -88,7 +94,7 @@ function snapWork(stage: string, w: WNet) {
   };
   const alive = w.edges.filter((e) => e.alive);
   for (const e of alive) parent[find(e.a)] = find(e.b);
-  trace.push({ stage, lines: alive.map((e) => ({ pts: e.pts, cls: e.cls, comp: find(e.a), name: e.name })) });
+  trace.push({ stage, lines: alive.map((e) => ({ pts: e.pts, cls: e.cls, comp: find(e.a), name: e.name, lvl: e.bridge ? 1 : e.tunnel ? -1 : 0 })) });
 }
 
 /** buildRoads plus the geometry after every stage (slower; for reports and tests) */
@@ -112,13 +118,13 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
     stages[k] = now - t;
     t = now;
   };
-  lastStats = { stages, resolverIterations: 0, droppedEdges: 0, violations: [] };
+  lastStats = { stages, resolverIterations: 0, droppedEdges: 0, droppedByClass: {}, dropLog: [], violations: [] };
   if (!settings.enabled || !vectors?.ways?.length) return { nodes: [], edges: [] };
   const detail = Math.max(0, Math.min(1, Number.isFinite(settings.detail) ? settings.detail : 0.7));
   const s = { ...settings, detail };
 
   let ways = prepareWays(vectors.ways, s);
-  flattenShortStructures(ways);
+  lastStats.detectedRings = detectRoundabouts(ways, terrain.scale?.horizontal ?? 1).length;
   lap('prepare');
   snapWays('prepare', ways);
   ways = collapseParallel(ways);
@@ -129,9 +135,11 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
   snapWays('clip', ways);
   const g = buildGraph(ways);
   lap('graph');
+  if (s.names) inheritRampNames(g);
   snapGraph('graph', g);
   bridgeWater(g, terrain);
   g.dissolveAll();
+  lastStats.shortStructures = extendShortStructures(g);
   snapGraph('water', g);
   snapDangles(g);
   snapGraph('snap', g);
@@ -157,7 +165,7 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
   snapGraph('conflicts', g);
   fixAcute(g);
   snapGraph('acute', g);
-  lastStats.structureFixes = fixStructureTransitions(g);
+  lastStats.structureFixes = fixStructureTransitions(g, (x, z) => sampleHeight(terrain.playable, x, z));
   contractShort(g);
   g.dissolveAll();
   removeFragments(g, 120);
@@ -191,7 +199,9 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
       focus = new Set<number>();
       em.eMap.forEach((wk, k) => { if (w.edges[wk].fresh || openChains.has(w.edges[wk].chain)) focus!.add(k); });
     }
-    const viol = findViolations(em.net, 100000, focus);
+    let viol = findViolations(em.net, 100000, focus);
+    // nothing left among changed edges: make sure with a full check (heights are recomputed globally)
+    if (!viol.length && focus) viol = findViolations(em.net);
     openChains = new Set<number>();
     for (const v of viol) for (const k of v.edges) openChains.add(w.edges[em.eMap[k]].chain);
     t0 = tick('validate', t0);
@@ -202,12 +212,18 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
       kinds[k] = (kinds[k] ?? 0) + 1;
     }
     lastStats.roundViolations = [...(lastStats.roundViolations ?? []), kinds];
+    if (round === 0) lastStats.firstViolations = viol.filter((v) => v.kind === 'elevation').map((v) => {
+      const e = v.edges.map((k) => em.net.edges[k]);
+      const ns = v.nodes.map((k) => em.net.nodes[k]);
+      return `${v.msg} | ${e.map((x) => `${x.cls} br=${x.bridge} tu=${x.tunnel} ${em.net.nodes[x.a].elevation}/${em.net.nodes[x.b].elevation} g ${em.net.nodes[x.a].ground}/${em.net.nodes[x.b].ground} len ${x.pts.length * 10}`).join(' ; ')} ${ns.map((n) => n.p.map(Math.round).join(',')).join(' ')}`;
+    });
     lastStats.lastViolations = viol.map((v) => {
       const e = v.edges.map((k) => em.net.edges[k]);
       const where = e.length ? e[0].pts[e[0].pts.length >> 1] : v.nodes.length ? em.net.nodes[v.nodes[0]].p : [0, 0];
       return `${v.msg} @ ${where[0].toFixed(0)},${where[1].toFixed(0)} chains ${v.edges.map((k) => w.edges[em.eMap[k]].chain).join('/')}`;
     });
     const firstNew = g.chains.length;
+    ctx.aggressive = round >= MAX_REPAIR_ROUNDS - 5;
     const n = repairRound(g, w, em.net, em.eMap, em.nMap, viol, ctx);
     lastStats.repairActions.push(n);
     if (!n) break;
@@ -304,11 +320,12 @@ function resolve(w: WNet, ground: Float64Array, elev: Float64Array): { net: Road
     if (w.edges[k].alive) {
       w.edges[k].alive = false;
       dropped++;
+      if (lastStats) lastStats.droppedByClass[w.edges[k].cls] = (lastStats.droppedByClass[w.edges[k].cls] ?? 0) + 1;
     }
   };
   // last resort only: a major route loses at most the single offending segment
   const killChain = (k: number) => {
-    if (!isMinorClass(w.edges[k].cls)) {
+    if (!isMinorClass(w.edges[k].cls) || w.edges[k].fixed) {
       kill(k);
       return;
     }
@@ -337,13 +354,18 @@ function resolve(w: WNet, ground: Float64Array, elev: Float64Array): { net: Road
       inc[e.a].push(k);
       inc[e.b].push(k);
     });
-    const imp = (k: number) => w.edges[eMap[k]].imp + (isMinorClass(w.edges[eMap[k]].cls) ? 0 : 1000);
+    const imp = (k: number) => w.edges[eMap[k]].imp + (isMinorClass(w.edges[eMap[k]].cls) && !w.edges[eMap[k]].fixed ? 0 : 1000);
     const terminal = (k: number) => {
       const e = net.edges[k];
       return (deg[e.a] === 1 && !net.nodes[e.a].outside) || (deg[e.b] === 1 && !net.nodes[e.b].outside);
     };
     const weaker = (a: number, b: number) => (imp(a) < imp(b) || (imp(a) === imp(b) && a > b) ? a : b);
     for (const v of viol) {
+      if (lastStats && v.edges.some((k) => !isMinorClass(w.edges[eMap[k]].cls))) {
+        const e0 = net.edges[v.edges[0]] ?? null;
+        const at = e0 ? e0.pts[e0.pts.length >> 1] : v.nodes.length ? net.nodes[v.nodes[0]].p : [0, 0];
+        lastStats.dropLog.push(`${v.kind} ${v.edges.map((k) => w.edges[eMap[k]].cls + (w.edges[eMap[k]].tunnel ? '(T)' : w.edges[eMap[k]].bridge ? '(B)' : '')).join('/')} @ ${Math.round(at[0])},${Math.round(at[1])}: ${v.msg}`);
+      }
       if (hard) {
         for (const k of v.edges) kill(eMap[k]);
         for (const n of v.nodes) for (const k of inc[n]) kill(eMap[k]);

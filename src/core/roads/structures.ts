@@ -6,7 +6,7 @@
  *    crosses other surface roads.
  */
 import type { Pt } from '../types';
-import { GEN_BRIDGE_ELEV, GEN_RAMP_GRADE, GEN_TUNNEL_DEPTH, levelKey } from './params';
+import { GEN_BRIDGE_ELEV, GEN_RAMP_GRADE, GEN_TUNNEL_DEPTH, family, levelKey } from './params';
 import { segIntersect } from './geom';
 import type { Graph } from './graph';
 
@@ -118,8 +118,18 @@ function trimEnd(g: Graph, id: number, n: number, len: number): void {
  * Give opposite structures (bridge vs tunnel) enough surface road between them for both ramps.
  * Returns the number of structures shortened or flattened.
  */
-export function fixStructureTransitions(g: Graph): number {
-  const need = (GEN_BRIDGE_ELEV + GEN_TUNNEL_DEPTH) / GEN_RAMP_GRADE + 20;
+export function fixStructureTransitions(g: Graph, height?: (x: number, z: number) => number): number {
+  const flatNeed = (GEN_BRIDGE_ELEV + GEN_TUNNEL_DEPTH) / GEN_RAMP_GRADE + 20;
+  // with real terrain the gap needed depends on the deck and portal heights
+  const needBetween = (bn: number, tn: number): number => {
+    if (!height) return flatNeed;
+    const B = g.nodes[bn];
+    const T = g.nodes[tn];
+    const yb = height(B.x, B.z) + GEN_BRIDGE_ELEV;
+    const yt = height(T.x, T.z) - GEN_TUNNEL_DEPTH;
+    return Math.max(0, yb - yt) / GEN_RAMP_GRADE + 10;
+  };
+  const need = height ? 700 : flatNeed;
   let changed = 0;
   for (const id of g.live()) {
     const c = g.chains[id];
@@ -150,8 +160,10 @@ export function fixStructureTransitions(g: Graph): number {
         }
       }
       if (!hit) continue;
+      const needHere = needBetween(n, hit.m);
+      if (hit.d >= needHere) continue;
       // shorten the shorter structure first, then the other
-      let missing = need - hit.d;
+      let missing = needHere - hit.d;
       const lb = g.len(id);
       const lt = g.len(hit.t);
       const first = lb <= lt ? { s: id, at: n, L: lb } : { s: hit.t, at: hit.m, L: lt };
@@ -165,4 +177,85 @@ export function fixStructureTransitions(g: Graph): number {
     }
   }
   return changed;
+}
+
+/**
+ * A portal (or bridge end) that sits on a junction where the terrain does not allow the ramp:
+ * move it into the structure by `by` metres, so the junction stays on the surface. Returns false
+ * when the structure is too short to give up that length.
+ */
+export function movePortal(g: Graph, id: number, n: number, by = 45): boolean {
+  const c = g.chains[id];
+  if (!c.alive || (!c.at.bridge && !c.at.tunnel) || (c.a !== n && c.b !== n)) return false;
+  const L = g.len(id);
+  if (L < by + 60) return false;
+  const s = c.a === n ? by : L - by;
+  const r = g.splitChain(id, s);
+  const near = c.a === n ? r.left : r.right;
+  g.chains[near].at = { ...g.chains[near].at, bridge: false, tunnel: false, layer: 0 };
+  flattenChain(g, near);
+  return true;
+}
+
+/**
+ * Bridges and tunnels too short for a game segment grow into the surface road they continue
+ * (a slightly longer deck or tunnel) instead of disappearing. Only a structure boxed in by
+ * junctions on both sides becomes surface road. Returns [extended, flattened].
+ */
+export function extendShortStructures(g: Graph, target = 46): [number, number] {
+  let extended = 0;
+  let flattened = 0;
+  for (const id of g.live()) {
+    let cur = id;
+    const c0 = g.chains[cur];
+    if (!c0.alive || (!c0.at.bridge && !c0.at.tunnel)) continue;
+    let L = g.len(cur);
+    if (L >= target) continue;
+    const kind = { bridge: c0.at.bridge, tunnel: c0.at.tunnel, layer: c0.at.layer };
+    let grew = false;
+    for (let side = 0; side < 2 && L < target; side++) {
+      const c = g.chains[cur];
+      if (!c.alive) break;
+      const n = side === 0 ? c.a : c.b;
+      const N = g.nodes[n];
+      if (N.outside || N.ch.length !== 2) continue;
+      const o = N.ch[0] === cur ? N.ch[1] : N.ch[0];
+      const oc = g.chains[o];
+      if (o === cur || !oc.alive || oc.at.bridge || oc.at.tunnel || oc.at.fixed || family(oc.at.cls) !== family(c.at.cls)) continue;
+      const oL = g.len(o);
+      const want = Math.min((target - L) / (side === 0 ? 2 : 1) + 2, oL - 36);
+      if (want < 2) continue;
+      const s = oc.a === n ? want : oL - want;
+      const r = g.splitChain(o, s);
+      const piece = oc.a === n ? r.left : r.right;
+      g.chains[piece].at = { ...g.chains[piece].at, ...kind };
+      if (g.dissolve(n)) {
+        // the merged chain is the newest one
+        cur = g.chains.length - 1;
+      }
+      L = g.len(cur) + (g.chains[cur].a === n || g.chains[cur].b === n ? want : 0);
+      grew = true;
+    }
+    if (grew) extended++;
+    // measure the whole structure run (several chains of the same kind in a row)
+    let run = 0;
+    const seen = new Set<number>();
+    const stack = [cur];
+    while (stack.length) {
+      const k = stack.pop()!;
+      if (seen.has(k) || !g.chains[k]?.alive) continue;
+      seen.add(k);
+      run += g.len(k);
+      const ck = g.chains[k];
+      for (const n of [ck.a, ck.b]) for (const o of g.nodes[n].ch) {
+        const oc = g.chains[o];
+        if (!seen.has(o) && oc.alive && oc.at.bridge === kind.bridge && oc.at.tunnel === kind.tunnel) stack.push(o);
+      }
+    }
+    if (run < 34) {
+      for (const k of seen) flattenChain(g, k);
+      flattened++;
+    }
+  }
+  return [extended, flattened];
 }

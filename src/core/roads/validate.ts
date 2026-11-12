@@ -3,7 +3,7 @@ import type { RoadEdge, RoadNetwork, RoadNode } from '../types';
 import {
   BORDER_MARGIN, BRIDGE_MIN_ELEV, CLASS_INDEX, HALF, MAX_EDGE, MAX_RAIL_OUTSIDE, MAX_RAMP_GRADE,
   MAX_ROAD_OUTSIDE, MAX_TURN_DEG, MIN_EDGE, MIN_NODE_ANGLE_DEG, MIN_NODE_GAP, OUTSIDE_APPROACH_TOL_DEG,
-  PREFAB_WIDTH, TUNNEL_MIN_DEPTH, VERTICAL_CLEARANCE, clearance, levelKey, levelRank, minRadius,
+  PREFAB_WIDTH, TUNNEL_MIN_DEPTH, VERTICAL_CLEARANCE, levelClearance, levelKey, levelRank, minRadius,
 } from './params';
 import {
   angleBetween, bezEndDir, bezLength, bezMinRadius, bezStartDir, bezTotalTurn, pointSegDist2, polyLength,
@@ -223,13 +223,11 @@ export function findViolations(net: RoadNetwork, maxReports = 100000, focus?: Se
     const ea = nodes[ia].elevation;
     const eb = nodes[ib].elevation;
     if (ea === 0 && eb === 0) return;
+    // elevation may not make a road steeper than the terrain under it or than the ramp limit
     const L = polyLength(e.pts);
-    const lim = MAX_RAMP_GRADE * L + 0.05;
     const dy = Y(ib) - Y(ia);
-    let bad = false;
-    if (ea !== 0 && eb !== 0) bad = Math.abs(dy) > lim && Math.abs(dy) > Math.abs(nodes[ib].ground - nodes[ia].ground) + 0.05;
-    else if (ea !== 0) bad = Math.sign(ea) * -dy > lim; // elevated a must not tower above b
-    else bad = Math.sign(eb) * dy > lim;
+    const dg = nodes[ib].ground - nodes[ia].ground;
+    const bad = Math.abs(dy) > Math.max(MAX_RAMP_GRADE * L, Math.abs(dg)) + 0.05;
     if (bad) {
       add({ kind: 'elevation', msg: `edge ${e.id} ramp gradient ${(Math.abs(dy) / L * 100).toFixed(0)}% too steep`, edges: [k], nodes: [ia, ib] });
     }
@@ -280,7 +278,7 @@ export function findViolations(net: RoadNetwork, maxReports = 100000, focus?: Se
       if (fa === ia || fa === ib || fb === ia || fb === ib) return;
       const kindF = levelKey(edgeLevel(f));
       const same = kindE === kindF;
-      const need = same ? clearance(e.prefab, f.prefab) : 0;
+      const need = same ? levelClearance(e.prefab, f.prefab, e.tunnel && f.tunnel) : 0;
       if (bb[o * 4] > bb[k * 4 + 2] + need || bb[o * 4 + 2] < bb[k * 4] - need) return;
       if (bb[o * 4 + 1] > bb[k * 4 + 3] + need || bb[o * 4 + 3] < bb[k * 4 + 1] - need) return;
       const pro = preOf(o);

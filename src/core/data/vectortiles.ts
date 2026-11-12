@@ -500,9 +500,12 @@ class Collector {
         if (!cls || !this.classes.has(cls)) continue;
         const brunnel = str(p.brunnel);
         if (brunnel === 'ford') continue;
-        if (cls === 'rail' && this.frame.scale < 0.8) {
+        // rail yards and sidings are simplified to their through tracks at every scale; spurs only
+        // when generalising
+        if (cls === 'rail') {
           const svc = str(p.service);
-          if (svc === 'yard' || svc === 'siding' || svc === 'spur') continue;
+          if (svc === 'yard' || svc === 'siding') continue;
+          if (svc === 'spur' && this.frame.scale < 0.8) continue;
         }
         const ow = typeof p.oneway === 'number' ? p.oneway : undefined;
         let oneway = cls === 'motorway';

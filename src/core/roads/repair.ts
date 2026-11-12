@@ -8,9 +8,10 @@ import { choosePrefab, family, levelKey } from './params';
 import { attrKey } from './params';
 import { dist } from './geom';
 import type { Graph } from './graph';
-import { contractChain, isMinorClass, reroute } from './generalize';
+import { contractChain, isMinorClass, limitCurvature, reroute } from './generalize';
+import { resample, smoothGaussian } from './geom';
 import { fixPair } from './conflicts';
-import { flattenChain, gradeSeparate } from './structures';
+import { flattenChain, gradeSeparate, movePortal } from './structures';
 import type { Violation } from './validate';
 import type { WNet } from './segment';
 
@@ -23,16 +24,18 @@ export interface RepairContext {
   log: string[];
   /** repeated attempts per location (rounded 20 m) */
   tries: Map<string, number>;
+  /** last rounds: resolve conflicts of major routes by stronger, still non-deleting, means */
+  aggressive: boolean;
 }
 
 export function newRepairContext(): RepairContext {
-  return { relaxed: new Map(), avoid: [], log: [], tries: new Map() };
+  return { relaxed: new Map(), avoid: [], log: [], tries: new Map(), aggressive: false };
 }
 
 /** local Laplacian smoothing around P (ends fixed); stronger on every repeat */
 function relaxCurve(g: Graph, c: number, P: Pt, ctx: RepairContext) {
   const C = g.chains[c];
-  if (!C.alive) return;
+  if (!C.alive || C.at.fixed) return;
   const k = (ctx.relaxed.get(c) ?? 0) + 1;
   ctx.relaxed.set(c, k);
   const p = C.pts.map((q) => [q[0], q[1]] as Pt);
@@ -99,7 +102,7 @@ function slideJoint(g: Graph, n: number, away: Pt, by: number): boolean {
  */
 function pinch(g: Graph, c: number, P: Pt, need: number): boolean {
   const C = g.chains[c];
-  if (!C.alive) return false;
+  if (!C.alive || C.at.fixed) return false;
   const p = C.pts;
   const cum: number[] = [0];
   for (let i = 1; i < p.length; i++) cum.push(cum[i - 1] + dist(p[i - 1], p[i]));
@@ -176,6 +179,72 @@ function trimDeadEndTip(g: Graph, c: number, edgePts: Pt[]): boolean {
   return false;
 }
 
+/** a major chain whose shape cannot be built: replace it by a much smoother curve between its ends */
+function simplifyChain(g: Graph, c: number): boolean {
+  const C = g.chains[c];
+  if (!C.alive || C.at.fixed) return false;
+  let p = resample(C.pts, 6);
+  if (p.length < 4) return false;
+  p = smoothGaussian(p, 7);
+  p = limitCurvature(p, 40, 6);
+  g.setPts(c, p);
+  return true;
+}
+
+/** stronger fixes for conflicts that keep coming back on major routes (never a deletion) */
+function escalate(
+  g: Graph, v: Violation, cs: number[], net: RoadNetwork, mid: (k: number) => Pt, ctx: RepairContext,
+  note: (what: string) => void,
+): boolean {
+  const live = cs.filter((c) => g.chains[c]?.alive);
+  switch (v.kind) {
+    case 'clearance':
+    case 'angle': {
+      if (live.length < 2 || live[0] === live[1]) {
+        if (live.length && simplifyChain(g, live[0])) {
+          note('simplify');
+          return true;
+        }
+        return false;
+      }
+      if (fixPair(g, live[0], live[1], 12)) {
+        note('merge-wide');
+        return true;
+      }
+      const minor = g.chains[live[0]].imp <= g.chains[live[1]].imp ? live[0] : live[1];
+      if (g.len(minor) < 150 && !g.chains[minor].at.fixed) {
+        note('contract-wide');
+        contractChain(g, minor);
+        return true;
+      }
+      return false;
+    }
+    case 'shape':
+    case 'length':
+      if (live.length && simplifyChain(g, live[0])) {
+        note('simplify');
+        return true;
+      }
+      return false;
+    case 'elevation': {
+      for (const c of live) {
+        const ch = g.chains[c];
+        if (ch.at.bridge || ch.at.tunnel) {
+          note('surface-wide');
+          flattenChain(g, c);
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      void net;
+      void mid;
+      void ctx;
+      return false;
+  }
+}
+
 /** apply one round of fixes; returns the number of actions */
 export function repairRound(
   g: Graph, w: WNet, net: RoadNetwork, eMap: number[], nMap: number[], viol: Violation[], ctx: RepairContext,
@@ -202,6 +271,35 @@ export function repairRound(
     const where = v.edges.length ? mid(v.edges[0]) : v.nodes.length ? net.nodes[v.nodes[0]].p : [0, 0];
     const note = (what: string) => ctx.log.push(`${what} ${v.kind} @ ${where[0].toFixed(0)},${where[1].toFixed(0)}`);
     if (cs.some((c) => touched.has(c))) continue;
+        // two tunnels (or two bridges) too close: pass at different depths instead of moving
+    if (v.kind === 'clearance' && cs.length >= 2) {
+        const [c1, c2] = cs;
+        const A1 = g.chains[c1]?.at;
+        const A2 = g.chains[c2]?.at;
+        // judge by the built edges: portals may have moved beyond the tagged structure
+        const E1 = net.edges[v.edges[0]];
+        const E2 = net.edges[v.edges[1]];
+        if (v.kind === 'clearance' && c1 !== c2 && A1 && A2 && E1 && E2 &&
+          ((E1.tunnel && E2.tunnel) || (E1.bridge && E2.bridge))) {
+          const [mi] = minorMajor(c1, c2);
+          const st = g.chains[mi].at.stack ?? 0;
+          const other = mi === c1 ? A2 : A1;
+          if (st <= (other.stack ?? 0) && st < 3) {
+            g.chains[mi].at = { ...g.chains[mi].at, stack: (other.stack ?? 0) + 1 };
+            note(E1.tunnel ? 'deeper-tunnel' : 'higher-bridge');
+            cs.forEach((c) => touched.add(c));
+            actions++;
+            continue;
+          }
+        }
+    }
+    if (ctx.aggressive && cs.some((c) => g.chains[c]?.alive && !isMinorClass(g.chains[c].at.cls))) {
+      if (escalate(g, v, cs, net, mid, ctx, note)) {
+        cs.forEach((c) => touched.add(c));
+        actions++;
+        continue;
+      }
+    }
     switch (v.kind) {
       case 'clearance':
       case 'angle': {
@@ -277,7 +375,8 @@ export function repairRound(
             attrKey(g.chains[g.nodes[n].ch[0]].at) !== attrKey(g.chains[g.nodes[n].ch[1]].at);
           if (joint(g2) && slideJoint(g, g2, p1, 32 - d)) { actions++; break; }
           if (joint(g1) && slideJoint(g, g1, p2, 32 - d)) { actions++; break; }
-          const keep = A.ch.length >= B.ch.length ? g1 : g2;
+          const onRing = (n: number) => g.nodes[n].ch.some((o) => g.chains[o].at.fixed);
+          const keep = onRing(g1) ? g1 : onRing(g2) ? g2 : A.ch.length >= B.ch.length ? g1 : g2;
           note('merge');
           g.mergeNodes(keep, keep === g1 ? g2 : g1);
           actions++;
@@ -313,9 +412,31 @@ export function repairRound(
             if (oc.alive && (oc.at.bridge || oc.at.tunnel)) cand.add(o);
           }
         }
+        // first move a portal off the node in trouble; flatten only very short structures
+        let moved = false;
+        for (const c of cand) {
+          if (touched.has(c)) continue;
+          const ch = g.chains[c];
+          for (const k of v.nodes) {
+            const gid = gidOf(k);
+            if (gid < 0 || (ch.a !== gid && ch.b !== gid)) continue;
+            if (movePortal(g, c, gid)) {
+              note(ch.at.tunnel ? 'move-portal' : 'move-bridge-end');
+              touched.add(c);
+              moved = true;
+              break;
+            }
+          }
+          if (moved) break;
+        }
+        if (moved) {
+          cs.forEach((c) => touched.add(c));
+          actions++;
+          break;
+        }
         let best = -1;
         for (const c of cand) if (best < 0 || g.len(c) < g.len(best)) best = c;
-        if (best < 0 || touched.has(best)) break;
+        if (best < 0 || touched.has(best) || g.len(best) > 150) break;
         note(g.chains[best].at.tunnel ? 'surface-tunnel' : 'surface-bridge');
         flattenChain(g, best);
         touched.add(best);

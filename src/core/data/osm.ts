@@ -331,8 +331,8 @@ export function parseOverpass(json: { elements?: OsmElement[] }, frame: Frame, s
         } else {
           cls = railwayClass(t.railway);
           if (
-            cls === 'rail' && frame.scale < 0.8 &&
-            (t.service === 'yard' || t.service === 'siding' || t.service === 'spur')
+            cls === 'rail' &&
+            (t.service === 'yard' || t.service === 'siding' || (t.service === 'spur' && frame.scale < 0.8))
           ) continue;
         }
         if (!cls || !classes.has(cls)) continue;

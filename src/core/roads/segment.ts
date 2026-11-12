@@ -39,6 +39,10 @@ export interface WEdge {
   alive: boolean;
   /** geometry recomputed in this segmentation (not reused from the cache) */
   fresh: boolean;
+  /** extra structure levels */
+  stack?: number;
+  /** built on purpose (roundabout ring) */
+  fixed?: boolean;
 }
 
 export interface WNet {
@@ -251,7 +255,7 @@ export function segmentGraph(g: Graph, avoid: Pt[] = [], cache?: SegCache): WNet
         edges.push({
           a: prevNode, b: nb, cls: c.at.cls, prefab, oneway, bridge: c.at.bridge, tunnel: c.at.tunnel,
           layer: c.at.layer, name: c.at.name ?? c.at.ref, ref: c.at.ref, bezier: r.bez, pts: r.pts,
-          chain: id, imp: c.imp, alive: true, fresh: false,
+          chain: id, imp: c.imp, alive: true, fresh: false, stack: c.at.stack, fixed: c.at.fixed,
         });
         prevNode = nb;
         continue;
@@ -304,6 +308,8 @@ export function segmentGraph(g: Graph, avoid: Pt[] = [], cache?: SegCache): WNet
         imp: c.imp,
         alive: true,
         fresh: true,
+        stack: c.at.stack,
+        fixed: c.at.fixed,
       });
       made.push({ bez, pts: edges[edges.length - 1].pts });
       prevNode = nb;

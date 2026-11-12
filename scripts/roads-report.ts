@@ -7,7 +7,8 @@
  * or a bare VectorData object (with an optional top-level "scale"). The terrain is flat (no water
  * mask), so water bridges are not exercised here.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readTerrain } from './terrainFile';
 import { buildRoads, buildRoadsTraced, lastBuildRoadsStats, validateNetwork } from '../src/core/roads/buildRoads';
 import { checkContinuity } from '../src/core/roads/continuity';
 import { CLASS_ORDER } from '../src/core/roads/params';
@@ -43,8 +44,10 @@ if (process.argv.includes('--all-classes')) {
   for (const c of ALL_ROAD_CLASSES) settings.classes[c] = true;
 }
 
+// real terrain when cached by scripts/area-terrain.ts (exports/<name>-terrain.bin), else flat
+const terrainFile = file.replace(/-vectors\.json$/, '-terrain.bin');
 const size = 64;
-const terrain: TerrainResult = {
+const flat: TerrainResult = {
   playable: { size, extentM: 14336, data: new Float32Array(size * size).fill(100) },
   world: { size: 4, extentM: 57344, data: new Float32Array(16).fill(100) },
   scale: { horizontal: scale, vertical: 1 },
@@ -56,6 +59,8 @@ const terrain: TerrainResult = {
   minHeight: 100,
   maxHeight: 100,
 };
+const terrain: TerrainResult = terrainFile !== file && existsSync(terrainFile) ? readTerrain(terrainFile) : flat;
+console.log(`terrain: ${terrain === flat ? 'flat (no water mask)' : terrainFile}`);
 
 const H = 7168;
 const lenOf = (pts: [number, number][]) => {
@@ -123,19 +128,25 @@ const prefabs = new Map<string, number>();
 for (const e of net.edges) prefabs.set(e.prefab, (prefabs.get(e.prefab) ?? 0) + 1);
 console.log('prefabs: ' + [...prefabs.entries()].map(([k, v]) => `${k} ${v}`).join(', '));
 console.log(`\nbuild ${ms} ms, validate ${msVal} ms; stages ${JSON.stringify(lastBuildRoadsStats()?.stages)}`);
-console.log(`repair: ${lastBuildRoadsStats()?.droppedEdges} edges dropped in ${lastBuildRoadsStats()?.resolverIterations} resolver iterations`);
+console.log(`repair: ${lastBuildRoadsStats()?.droppedEdges} edges dropped in ${lastBuildRoadsStats()?.resolverIterations} resolver iterations ${JSON.stringify(lastBuildRoadsStats()?.droppedByClass)}`);
 console.log(`\nviolations: ${violations.length}`);
 for (const v of violations.slice(0, 50)) console.log('  ' + v);
 if (violations.length > 50) console.log(`  ... ${violations.length - 50} more`);
 
 // continuity (traced second run for stage attribution)
 const traced = buildRoadsTraced(vectors, terrain, settings);
-const cont = checkContinuity(vectors, traced.net, settings, traced.snapshots);
+const ringDiscs = (lastBuildRoadsStats()?.roundabouts?.rings ?? []).map((g) => ({ cx: g.cx, cz: g.cz, r: Math.max(g.builtR, g.realR * terrain.scale.horizontal) }));
+const cont = checkContinuity(vectors, traced.net, settings, traced.snapshots, ringDiscs);
 console.log('\ncontinuity    in km  expect km   out km  missing km  breaks  named in/out km');
 for (const [c, v] of Object.entries(cont.classes)) {
   if (!v) continue;
   console.log(`${c.padEnd(12)} ${v.inKm.toFixed(1).padStart(6)} ${v.expectedKm.toFixed(1).padStart(10)} ${v.outKm.toFixed(1).padStart(8)} ${v.missingKm.toFixed(2).padStart(11)} ${String(v.breaks).padStart(7)}   ${v.namedInKm.toFixed(1)}/${v.namedOutKm.toFixed(1)}`);
 }
+for (const k of ['bridge', 'tunnel'] as const) {
+  const x = cont.structures[k];
+  console.log(`${k}s: expected ${x.expectedKm.toFixed(2)} km, kept as ${k} ${x.keptKm.toFixed(2)} km (${((100 * x.keptKm) / Math.max(1e-9, x.expectedKm)).toFixed(0)}%), output ${x.outKm.toFixed(2)} km`);
+}
+console.log('structure loss by stage (km): ' + Object.entries(cont.structureLoss).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', '));
 console.log(`components in ${cont.inComponents} out ${cont.outComponents}; dead ends in ${cont.inDeadEnds} out ${cont.outDeadEnds}; named share in ${(cont.namedInShare * 100).toFixed(1)}% out ${(cont.namedOutShare * 100).toFixed(1)}%`);
 const byStage = new Map<string, number>();
 for (const b of cont.breaks) {
@@ -145,7 +156,11 @@ for (const b of cont.breaks) {
 console.log('breaks by class/kind/stage: ' + [...byStage.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', '));
 const st = lastBuildRoadsStats();
 const rb = st?.roundabouts;
-if (rb) console.log(`roundabouts: ${rb.found} rings (${rb.detected} detected from geometry), kept ${rb.kept}, enlarged ${rb.kept !== undefined ? rb.enlarged : 0}, collapsed ${rb.collapsed}`);
+if (rb) {
+  const big = rb.rings.filter((r) => r.realR >= 12);
+  const bigKept = big.filter((r) => r.outcome !== 'collapsed').length;
+  console.log(`roundabouts: ${st?.detectedRings ?? '?'} detected, ${rb.found} closed in the graph: kept ${rb.kept}, enlarged ${rb.enlarged}, collapsed ${rb.collapsed} ${JSON.stringify(rb.reasons)}; radius >= 12 real m: ${bigKept}/${big.length} kept`);
+}
 const insideKm = (pts: [number, number][]) => {
   let s = 0;
   for (let i = 1; i < pts.length; i++) {

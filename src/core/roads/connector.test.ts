@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Pt, RawWay, RoadNetwork, TerrainResult } from '../types';
 import { buildRoads, validateNetwork } from './buildRoads';
 import { addOutsideConnection } from './connector';
-import { line, settings, terrain, vectors, way } from './testutil';
+import { line, settings, terrain, terrainFromFixture, vectors, way } from './testutil';
 
 function city(t: TerrainResult): RoadNetwork {
   const ways: RawWay[] = [];
@@ -126,5 +126,21 @@ describe('addOutsideConnection', () => {
     const corner = addOutsideConnection(base, t, 'road', [7168, 7168]);
     const o = corner.net.nodes.find((n) => n.outside && n.p[0] === 7168 && n.p[1] > 6000);
     expect(o?.p[1]).toBe(7168 - 300);
+  });
+});
+
+describe('addOutsideConnection on real terrain', () => {
+  it('connects a real road network over mountain terrain and validates (Bergen extract)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const f = JSON.parse(readFileSync(new URL('./fixtures/hill-tunnel-bergen.json', import.meta.url), 'utf8'));
+    const t = terrainFromFixture(f.terrain, f.scale);
+    const net = buildRoads(vectors(f.ways), t, settings({ detail: 1 }));
+    expectClean(net);
+    for (const p of [[-7168, 0], [0, 7168]] as Pt[]) {
+      const r = addOutsideConnection(net, t, 'road', p);
+      expect(r.ok).toBe(true);
+      expectClean(r.net);
+      for (const n of r.net.nodes) expect(Number.isFinite(n.ground)).toBe(true);
+    }
   });
 });

@@ -83,3 +83,35 @@ export function line(x0: number, z0: number, x1: number, z1: number, step = 50):
   for (let i = 0; i <= n; i++) out.push([x0 + ((x1 - x0) * i) / n, z0 + ((z1 - z0) * i) / n]);
   return out;
 }
+
+export interface FixtureTerrain {
+  n: number;
+  cell: number;
+  pad: number;
+  heights: number[];
+  mask: number[];
+  seaLevel: number;
+  hasSea: boolean;
+}
+
+/** a playable terrain built from a fixture's height / water subgrid (coordinates are recentred) */
+export function terrainFromFixture(ft: FixtureTerrain, scale: number, size = 512): TerrainResult {
+  const t = terrain({ scale, size });
+  const ext = t.playable.extentM;
+  const cell = ext / size;
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      const x = -ext / 2 + (c + 0.5) * cell;
+      const z = ext / 2 - (r + 0.5) * cell;
+      const fc = Math.floor((x + ft.pad) / ft.cell);
+      const fr = Math.floor((ft.pad - z) / ft.cell);
+      const inside = fc >= 0 && fr >= 0 && fc < ft.n && fr < ft.n;
+      const k = Math.min(ft.n - 1, Math.max(0, fr)) * ft.n + Math.min(ft.n - 1, Math.max(0, fc));
+      t.playable.data[r * size + c] = ft.heights[k];
+      t.waterMask[r * size + c] = inside ? ft.mask[k] : 0;
+    }
+  }
+  t.seaLevel = ft.seaLevel;
+  t.hasSea = ft.hasSea;
+  return t;
+}
