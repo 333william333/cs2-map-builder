@@ -19,6 +19,11 @@ if (-not (Test-Path -LiteralPath $dll)) {
     exit 1
 }
 
+if (Get-Process -Name 'Cities2' -ErrorAction SilentlyContinue) {
+    Write-Error 'Cities: Skylines II (Cities2.exe) is running. Close the game first; the mod DLL is loaded once at startup.'
+    exit 1
+}
+
 $userData = Join-Path $env:USERPROFILE 'AppData\LocalLow\Colossal Order\Cities Skylines II'
 if (-not (Test-Path -LiteralPath $userData)) {
     Write-Error "Game user folder not found: '$userData'. Start the game once first."

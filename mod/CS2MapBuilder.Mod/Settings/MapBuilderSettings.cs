@@ -19,8 +19,8 @@ namespace CS2MapBuilder.Settings
     /// The step checkboxes are shared with the editor panel.
     /// </summary>
     [FileLocation(ModPaths.ModId)]
-    [SettingsUIGroupOrder(kPackageGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kSafetyGroup)]
-    [SettingsUIShowGroupName(kPackageGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kSafetyGroup)]
+    [SettingsUIGroupOrder(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup, kSafetyGroup)]
+    [SettingsUIShowGroupName(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup, kSafetyGroup)]
     public sealed class MapBuilderSettings : ModSetting
     {
         public const string kImportTab = "Import";
@@ -32,6 +32,8 @@ namespace CS2MapBuilder.Settings
         public const string kBatchGroup = "Batching";
         public const string kWaterGroup = "Water";
         public const string kSafetyGroup = "Safety";
+        public const string kPlayableGroup = "PlayableMap";
+        public const string kMapFlowGroup = "MapFlow";
 
         public static MapBuilderSettings Current { get; set; }
 
@@ -44,7 +46,19 @@ namespace CS2MapBuilder.Settings
         [SettingsUISection(kImportTab, kPackageGroup)]
         [SettingsUIDropdown(typeof(MapBuilderSettings), nameof(GetPackageItems))]
         [SettingsUIValueVersion(typeof(MapBuilderSettings), nameof(GetPackagesVersion))]
-        public string SelectedPackage { get; set; }
+        public string SelectedPackage
+        {
+            get => m_SelectedPackage;
+            set
+            {
+                // The map name follows the package (manifest name) unless the user typed their own.
+                string oldDefault = MapCatalog.DefaultMapName(m_SelectedPackage);
+                m_SelectedPackage = value;
+                if (string.IsNullOrWhiteSpace(MapName) || MapName == oldDefault)
+                    MapName = MapCatalog.DefaultMapName(value);
+            }
+        }
+        private string m_SelectedPackage;
 
         [SettingsUISection(kImportTab, kPackageGroup)]
         [SettingsUIButton]
@@ -54,6 +68,30 @@ namespace CS2MapBuilder.Settings
         [SettingsUIMultilineText]
         [SettingsUIDisplayName(typeof(MapBuilderSettings), nameof(GetStatusText))]
         public string StatusText => string.Empty;
+
+        // ------------------------------------------------------------------ Import tab: playable map
+
+        [SettingsUISection(kImportTab, kPlayableGroup)]
+        [SettingsUITextInput]
+        public string MapName { get; set; }
+
+        [SettingsUISection(kImportTab, kPlayableGroup)]
+        public bool OverwriteExistingMap { get; set; }
+
+        [SettingsUISection(kImportTab, kPlayableGroup)]
+        [SettingsUIButton]
+        [SettingsUIButtonGroup("PlayableActions")]
+        public bool CreatePlayableMap { set { MapFlowSystem.RequestCreate(SelectedPackage, MapName, OverwriteExistingMap); } }
+
+        [SettingsUISection(kImportTab, kPlayableGroup)]
+        [SettingsUIButton]
+        [SettingsUIButtonGroup("PlayableActions")]
+        public bool SaveAsPlayableMap { set { MapFlowSystem.RequestSaveCurrent(SelectedPackage, MapName, OverwriteExistingMap); } }
+
+        [SettingsUISection(kImportTab, kPlayableGroup)]
+        [SettingsUIButton]
+        [SettingsUIButtonGroup("PlayableActions")]
+        public bool CancelPlayableMap { set { MapFlowSystem.RequestCancel(); } }
 
         // ------------------------------------------------------------------ Import tab: steps
 
@@ -77,7 +115,7 @@ namespace CS2MapBuilder.Settings
         [SettingsUISection(kImportTab, kActionsGroup)]
         [SettingsUIButton]
         [SettingsUIButtonGroup("ImportActions")]
-        public bool CancelImport { set { ImportSystem.RequestCancel(); } }
+        public bool CancelImport { set { ImportSystem.RequestCancel(); MapFlowSystem.RequestCancel(); } }
 
         [SettingsUISection(kImportTab, kActionsGroup)]
         [SettingsUIButton]
@@ -136,6 +174,27 @@ namespace CS2MapBuilder.Settings
 
         [SettingsUISection(kAdvancedTab, kWaterGroup)] public bool SkipTreesBelowSeaLevel { get; set; }
 
+        // ------------------------------------------------------------------ Advanced: playable map flow
+
+        [SettingsUISection(kAdvancedTab, kMapFlowGroup)]
+        [SettingsUISlider(min = 30, max = 1800, step = 30, unit = Game.UI.Unit.kInteger)]
+        public int EditorReadyFrames { get; set; }
+
+        [SettingsUISection(kAdvancedTab, kMapFlowGroup)]
+        [SettingsUISlider(min = 60, max = 900, step = 30, unit = Game.UI.Unit.kInteger)]
+        public int EditorLoadTimeoutSeconds { get; set; }
+
+        [SettingsUISection(kAdvancedTab, kMapFlowGroup)]
+        [SettingsUISlider(min = 120, max = 36000, step = 120, unit = Game.UI.Unit.kInteger)]
+        public int MapSettleFrames { get; set; }
+
+        [SettingsUISection(kAdvancedTab, kMapFlowGroup)]
+        [SettingsUISlider(min = 30, max = 900, step = 30, unit = Game.UI.Unit.kInteger)]
+        public int SaveTimeoutSeconds { get; set; }
+
+        [SettingsUISection(kAdvancedTab, kMapFlowGroup)]
+        public bool NotifyNewPackages { get; set; }
+
         // ------------------------------------------------------------------ Advanced: safety
 
         /// <summary>Nothing runs outside the Map Editor unless this is on.</summary>
@@ -143,7 +202,14 @@ namespace CS2MapBuilder.Settings
 
         public override void SetDefaults()
         {
+            MapName = string.Empty;
             SelectedPackage = string.Empty;
+            OverwriteExistingMap = false;
+            EditorReadyFrames = 180;
+            EditorLoadTimeoutSeconds = 300;
+            MapSettleFrames = 3600;
+            SaveTimeoutSeconds = 180;
+            NotifyNewPackages = true;
             StepTerrain = true;
             StepWorldMap = true;
             StepClimate = true;
@@ -183,7 +249,13 @@ namespace CS2MapBuilder.Settings
 
         public int GetPackagesVersion() => s_PackagesVersion;
 
-        public LocalizedString GetStatusText() => LocalizedString.Value(ImportSystem.StatusLine);
+        public LocalizedString GetStatusText()
+        {
+            string flow = MapFlowSystem.StatusLine;
+            string import = ImportSystem.StatusLine;
+            if (string.IsNullOrEmpty(flow)) return LocalizedString.Value(import);
+            return LocalizedString.Value(MapFlowSystem.IsBusy ? flow + "\n" + import : flow);
+        }
     }
 
     /// <summary>en-US strings for the options page (labels for all settings, the tab name and the editor tool tab).</summary>
@@ -207,6 +279,8 @@ namespace CS2MapBuilder.Settings
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kBatchGroup), "Batching and timing" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kWaterGroup), "Water" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kSafetyGroup), "Safety" },
+                { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kPlayableGroup), "Playable map (start from the main menu)" },
+                { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kMapFlowGroup), "Create playable map: timing" },
                 { "Editor.TOOL[" + MapBuilderEditorToolIds.ToolId + "]", "CS2 Map Builder" },
                 { "Editor.TOOL_DESCRIPTION[" + MapBuilderEditorToolIds.ToolId + "]", "Import a CS2 Map Builder package" },
             };
@@ -218,6 +292,16 @@ namespace CS2MapBuilder.Settings
             Add(nameof(MapBuilderSettings.SelectedPackage), "Package", "Package folder under ModsData/CS2MapBuilder/packages.");
             Add(nameof(MapBuilderSettings.RefreshPackages), "Refresh list", "Re-read the packages folder.");
             Add(nameof(MapBuilderSettings.StatusText), "Status", "Import status.");
+            Add(nameof(MapBuilderSettings.MapName), "Map name", "Name of the saved map, shown under New Game. Defaults to the package name.");
+            Add(nameof(MapBuilderSettings.OverwriteExistingMap), "Overwrite existing map", "Allow replacing one of your own maps with the same name. Off: an existing name is refused. Game and Paradox Mods maps are never overwritten.");
+            Add(nameof(MapBuilderSettings.CreatePlayableMap), "Create playable map", "From the main menu: opens the Map Editor with a new map, imports the package with all steps, fills in name, description, theme and start tiles, checks the checklist and saves the map so it appears under New Game.");
+            Add(nameof(MapBuilderSettings.SaveAsPlayableMap), "Save editor map as playable map", "In the Map Editor: fill in name, description and start tiles for the open map, check the checklist and save it.");
+            Add(nameof(MapBuilderSettings.CancelPlayableMap), "Cancel", "Stop creating the map (nothing is saved if the save has not started).");
+            Add(nameof(MapBuilderSettings.EditorReadyFrames), "Frames to wait after the editor opens", "Let the new map finish setting up before the import starts.");
+            Add(nameof(MapBuilderSettings.EditorLoadTimeoutSeconds), "Editor load timeout (s)", "Give up if the Map Editor has not opened after this long.");
+            Add(nameof(MapBuilderSettings.MapSettleFrames), "Maximum settle time (frames)", "Longest wait for terrain, water and the checklist before saving.");
+            Add(nameof(MapBuilderSettings.SaveTimeoutSeconds), "Save timeout (s)", "Give up waiting for the save after this long.");
+            Add(nameof(MapBuilderSettings.NotifyNewPackages), "Notify about new packages", "In the main menu, show a notification for each package that has no saved map yet.");
             Add(nameof(MapBuilderSettings.StepTerrain), "Terrain (height scale + heightmap)", "Set the height scale and replace the playable heightmap.");
             Add(nameof(MapBuilderSettings.StepWorldMap), "World map", "Replace the world (backdrop) heightmap, if the package has one.");
             Add(nameof(MapBuilderSettings.StepClimate), "Climate, theme, latitude/longitude", "Clone the current climate, apply the package seasons and location, set the theme.");

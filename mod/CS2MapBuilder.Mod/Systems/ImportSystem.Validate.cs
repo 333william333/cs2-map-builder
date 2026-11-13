@@ -40,6 +40,7 @@ namespace CS2MapBuilder.Systems
             {
                 m_Pkg = pkg;
                 var m = pkg.Manifest;
+                LastManifest = m;
                 ImportLog.Info($"Manifest: name='{m.Name}' version={m.Version} heightScale={m.HeightScale} seaLevel={m.SeaLevel} hasSea={m.HasSea} " +
                                $"theme={m.Theme} startTile={(m.StartTile == null ? "none" : m.StartTile.Col + "," + m.StartTile.Row)} " +
                                $"counts: nodes={m.Counts?.Nodes} edges={m.Counts?.Edges} trees={m.Counts?.Trees} water={m.Counts?.WaterSources}");

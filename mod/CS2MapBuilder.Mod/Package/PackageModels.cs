@@ -45,6 +45,8 @@ namespace CS2MapBuilder.Package
         [JsonProperty("theme")] public string Theme;
         [JsonProperty("startTile")] public TileRef StartTile;
         [JsonProperty("counts")] public Counts Counts;
+        /// <summary>Optional (M5): every outside connection from the app's playability report.</summary>
+        [JsonProperty("outsideConnections")] public List<OutsideConnectionJson> OutsideConnections;
         [JsonProperty("netPrefabs")] public Dictionary<string, string> NetPrefabs = new Dictionary<string, string>();
         [JsonProperty("treePrefabs")] public Dictionary<string, string> TreePrefabs = new Dictionary<string, string>();
         [JsonProperty("treeSpecies")] public List<string> TreeSpecies = new List<string>();
@@ -65,6 +67,16 @@ namespace CS2MapBuilder.Package
     {
         [JsonProperty("horizontal")] public double Horizontal;
         [JsonProperty("vertical")] public double Vertical;
+    }
+
+    public sealed class OutsideConnectionJson
+    {
+        /// <summary>"road" | "rail" | "ship" | "air" | "power" | "water"</summary>
+        [JsonProperty("kind")] public string Kind;
+        [JsonProperty("x")] public float X;
+        [JsonProperty("z")] public float Z;
+        [JsonProperty("synthetic")] public bool Synthetic;
+        [JsonProperty("manual")] public bool Manual;
     }
 
     public sealed class TileRef

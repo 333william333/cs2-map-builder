@@ -33,12 +33,26 @@ Out-of-game tools (`CS2MapBuilder.PackageCheck/bin/Release/PackageCheck.exe`):
 `check <dir>` (validates a package exactly as the mod reads it), `selftest [sample-dir]`,
 `make-marker <dir>` (terrain/water test package with corner markers), `make-trees <dir> <count>`.
 
-`sample-package/` is hand-made: 6 nodes, 5 edges (Medium Road + Small Road, named), 12 trees, 1 lake source,
+`sample-package/` is hand-made: 42 nodes, 41 edges (Medium Road + Small Road, named, one road to the east border as the
+outside connection), 12 trees, 1 lake source,
 climate for Uppsala. It omits `heightmap.png`, `worldmap.png` and all `resources/*.png`.
 
 ## Using it
 
-Map Editor -> tab **CS2 Map Builder** (package icon): pick package, tick steps, **Import**, **Cancel**,
+**Create a playable map (recommended).** Main menu -> Options -> CS2 Map Builder -> pick the package, check the map
+name (defaults to the manifest name) -> **Create playable map**. The mod opens the Map Editor with a new map
+(`GameManager.Load(GameMode.Editor, Purpose.NewMap)`, as the menu's Editor > New map does), runs the full import with
+all steps, waits (bounded) for terrain, water and the checklist, sets the map name and description (place, coordinates,
+scale, data attribution), theme and start tiles, logs each checklist item of `MapRequirementSystem` (starting area,
+water in it, road connection, map name) and saves through `MapPanelSystem.SaveMap`, the method the editor's Save Map
+dialog calls. The map is then under New Game and in the editor's Load Map list. Progress and the result appear on the
+Options page and as a notification. An existing map name is refused unless **Overwrite existing map** is ticked, and
+only your own maps can be overwritten. Leaving the editor midway stops the flow without saving. If a part cannot be done
+from code, the editor's Save Map dialog is opened and the message says exactly what to type and click.
+In the editor tab, **Save as playable map** does the metadata, checklist and save part for the open map.
+In the main menu, a notification announces each package that has no saved map yet.
+
+**Manual import.** Map Editor -> tab **CS2 Map Builder** (package icon): pick package, tick steps, **Import**, **Cancel**,
 **Undo last import**, progress and the last log lines. Fallback with the same actions:
 Options -> CS2 Map Builder. Imports are refused outside the Map Editor unless "Allow import outside the Map Editor" is on.
 Logs: `Logs\CS2MapBuilder.log` and `ModsData\CS2MapBuilder\import.log` (per-step timing, counts, skipped/failed with
@@ -50,6 +64,8 @@ reasons, final summary). `ModsData\CS2MapBuilder\prefabs.txt` lists every net/tr
 |---|---|
 | `Mod.cs` | `IMod`: logs version + packages folder, options page, registers systems. No work on load. |
 | `Package/` | Pure C# (no game refs): models, reader + validation, PNG codec, prefab fallback table, planning (tiers, connected components, Z-order, season units, row mapping). Also compiled into PackageCheck. |
+| `Systems/MapFlowSystem.cs` | UIUpdate. "Create playable map" and "Save as playable map": editor load, import, settle, metadata, checklist, save, fallback dialog, notifications. |
+| `Systems/MapCatalog.cs`, `PackageWatchSystem.cs` | Existing maps (same enumeration as the editor's map picker); main-menu notification for packages without a map. |
 | `Systems/ImportSystem*.cs` | `GameSystemBase` at `ToolUpdate`. Frame-budgeted state machine; each step is an iterator, every `MoveNext` in try/catch so a failing step is reported and the rest continue. Steps: Validate -> Terrain -> Climate -> Water -> Resources -> Networks -> Names -> Trees -> StartTiles -> Finalize. Heavy file parsing runs on a worker thread. |
 | `UI/` | `EditorTabRegistrationSystem` (UIUpdate, appends the tool to `EditorToolUISystem.tools` in the editor), `MapBuilderEditorTool` + `MapBuilderPanel` (`EditorPanelSystemBase`, C# widgets only). |
 | `Settings/` | `ModSetting` options page: same actions + every in-game unknown as a switch. |
@@ -76,6 +92,20 @@ start tiles are not reverted. Records live only for the session.
 | Climate clone persistence, names on aggregates | step toggles (Climate, Street names) |
 | Undo by `Deleted` on nets | Undo batch size (no alternative path implemented) |
 | Elevated course y = ground + elevation | none (reported by the node match count and visually) |
+| Editor ready after `Load(Editor, NewMap)` | Frames to wait after the editor opens, Editor load timeout |
+| Water and checklist settle time before saving | Maximum settle time (frames), Save timeout |
+
+### Create playable map: what is verified only by compilation
+
+Everything in `MapFlowSystem` compiles against 1.6.4 and follows the decompiled call sites, but has not run in game:
+the editor load (`GameManager.Load(GameMode.Editor, Purpose.NewMap)` queued on `TaskManager` task "SaveLoadGame",
+as `MenuUISystem.StartEditor`), the map name and description (written by reflection into the private
+`MapPanelSystem.m_MapNameLocalization` / `m_MapDescriptionLocalization` LocalizationFields, then checked with
+`IsValid()`), the checklist (`MapRequirementSystem.hasStartingArea`, `StartingAreaHasResource(SurfaceWater/GroundWater)`,
+`roadConnection`, and `MapPanelSystem.MapIsPlayable()`), and the save (`MapPanelSystem.SaveMap` with
+`AssetDatabase.user` and `SaveHelpers.GetAssetDataPath<MapMetadata>`, or the overwrite branch exactly as the editor's
+`OnSaveMap`). No preview or thumbnail is captured: the editor saves without one when none is picked and the map list
+falls back to the default image.
 
 ## Corrections to docs/MOD_SPIKE.md (checked against the 1.6.4 reference/DLLs)
 

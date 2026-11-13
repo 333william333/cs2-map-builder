@@ -1,22 +1,1161 @@
 {
-  "nodes": [
-    [1, 0, 0, 0, 0],
-    [2, 150, 0, 0, 0],
-    [3, -150, 0, 0, 0],
-    [4, 0, 150, 0, 0],
-    [5, 0, -150, 0, 0],
-    [6, 300, 0, 0, 0]
+ "nodes": [
+  [
+   1,
+   0,
+   0,
+   0,
+   0
   ],
-  "edges": [
-    { "id": 1, "a": 1, "b": 2, "cls": "secondary", "prefab": "road_medium_4lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Storgatan",
-      "bezier": [0, 0, 50, 0, 100, 0, 150, 0] },
-    { "id": 2, "a": 3, "b": 1, "cls": "secondary", "prefab": "road_medium_4lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Storgatan",
-      "bezier": [-150, 0, -100, 0, -50, 0, 0, 0] },
-    { "id": 3, "a": 1, "b": 4, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Kyrkogatan",
-      "bezier": [0, 0, 0, 50, 0, 100, 0, 150] },
-    { "id": 4, "a": 5, "b": 1, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Kyrkogatan",
-      "bezier": [0, -150, 0, -100, 0, -50, 0, 0] },
-    { "id": 5, "a": 2, "b": 6, "cls": "residential", "prefab": "road_small_2lane", "oneway": false, "bridge": false, "tunnel": false, "name": "Ågatan",
-      "bezier": [150, 0, 200, 30, 250, 30, 300, 0] }
+  [
+   2,
+   150,
+   0,
+   0,
+   0
+  ],
+  [
+   3,
+   -150,
+   0,
+   0,
+   0
+  ],
+  [
+   4,
+   0,
+   150,
+   0,
+   0
+  ],
+  [
+   5,
+   0,
+   -150,
+   0,
+   0
+  ],
+  [
+   6,
+   300,
+   0,
+   0,
+   0
+  ],
+  [
+   7,
+   490.78,
+   0,
+   0,
+   0
+  ],
+  [
+   8,
+   681.56,
+   0,
+   0,
+   0
+  ],
+  [
+   9,
+   872.33,
+   0,
+   0,
+   0
+  ],
+  [
+   10,
+   1063.11,
+   0,
+   0,
+   0
+  ],
+  [
+   11,
+   1253.89,
+   0,
+   0,
+   0
+  ],
+  [
+   12,
+   1444.67,
+   0,
+   0,
+   0
+  ],
+  [
+   13,
+   1635.44,
+   0,
+   0,
+   0
+  ],
+  [
+   14,
+   1826.22,
+   0,
+   0,
+   0
+  ],
+  [
+   15,
+   2017.0,
+   0,
+   0,
+   0
+  ],
+  [
+   16,
+   2207.78,
+   0,
+   0,
+   0
+  ],
+  [
+   17,
+   2398.56,
+   0,
+   0,
+   0
+  ],
+  [
+   18,
+   2589.33,
+   0,
+   0,
+   0
+  ],
+  [
+   19,
+   2780.11,
+   0,
+   0,
+   0
+  ],
+  [
+   20,
+   2970.89,
+   0,
+   0,
+   0
+  ],
+  [
+   21,
+   3161.67,
+   0,
+   0,
+   0
+  ],
+  [
+   22,
+   3352.44,
+   0,
+   0,
+   0
+  ],
+  [
+   23,
+   3543.22,
+   0,
+   0,
+   0
+  ],
+  [
+   24,
+   3734.0,
+   0,
+   0,
+   0
+  ],
+  [
+   25,
+   3924.78,
+   0,
+   0,
+   0
+  ],
+  [
+   26,
+   4115.56,
+   0,
+   0,
+   0
+  ],
+  [
+   27,
+   4306.33,
+   0,
+   0,
+   0
+  ],
+  [
+   28,
+   4497.11,
+   0,
+   0,
+   0
+  ],
+  [
+   29,
+   4687.89,
+   0,
+   0,
+   0
+  ],
+  [
+   30,
+   4878.67,
+   0,
+   0,
+   0
+  ],
+  [
+   31,
+   5069.44,
+   0,
+   0,
+   0
+  ],
+  [
+   32,
+   5260.22,
+   0,
+   0,
+   0
+  ],
+  [
+   33,
+   5451.0,
+   0,
+   0,
+   0
+  ],
+  [
+   34,
+   5641.78,
+   0,
+   0,
+   0
+  ],
+  [
+   35,
+   5832.56,
+   0,
+   0,
+   0
+  ],
+  [
+   36,
+   6023.33,
+   0,
+   0,
+   0
+  ],
+  [
+   37,
+   6214.11,
+   0,
+   0,
+   0
+  ],
+  [
+   38,
+   6404.89,
+   0,
+   0,
+   0
+  ],
+  [
+   39,
+   6595.67,
+   0,
+   0,
+   0
+  ],
+  [
+   40,
+   6786.44,
+   0,
+   0,
+   0
+  ],
+  [
+   41,
+   6977.22,
+   0,
+   0,
+   0
+  ],
+  [
+   42,
+   7168.0,
+   0,
+   0,
+   1
   ]
+ ],
+ "edges": [
+  {
+   "id": 1,
+   "a": 1,
+   "b": 2,
+   "cls": "secondary",
+   "prefab": "road_medium_4lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Storgatan",
+   "bezier": [
+    0,
+    0,
+    50,
+    0,
+    100,
+    0,
+    150,
+    0
+   ]
+  },
+  {
+   "id": 2,
+   "a": 3,
+   "b": 1,
+   "cls": "secondary",
+   "prefab": "road_medium_4lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Storgatan",
+   "bezier": [
+    -150,
+    0,
+    -100,
+    0,
+    -50,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": 3,
+   "a": 1,
+   "b": 4,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Kyrkogatan",
+   "bezier": [
+    0,
+    0,
+    0,
+    50,
+    0,
+    100,
+    0,
+    150
+   ]
+  },
+  {
+   "id": 4,
+   "a": 5,
+   "b": 1,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Kyrkogatan",
+   "bezier": [
+    0,
+    -150,
+    0,
+    -100,
+    0,
+    -50,
+    0,
+    0
+   ]
+  },
+  {
+   "id": 5,
+   "a": 2,
+   "b": 6,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Ågatan",
+   "bezier": [
+    150,
+    0,
+    200,
+    30,
+    250,
+    30,
+    300,
+    0
+   ]
+  },
+  {
+   "id": 6,
+   "a": 6,
+   "b": 7,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    300,
+    0,
+    363.59,
+    0,
+    427.19,
+    0,
+    490.78,
+    0
+   ]
+  },
+  {
+   "id": 7,
+   "a": 7,
+   "b": 8,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    490.78,
+    0,
+    554.37,
+    0,
+    617.97,
+    0,
+    681.56,
+    0
+   ]
+  },
+  {
+   "id": 8,
+   "a": 8,
+   "b": 9,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    681.56,
+    0,
+    745.15,
+    0,
+    808.74,
+    0,
+    872.33,
+    0
+   ]
+  },
+  {
+   "id": 9,
+   "a": 9,
+   "b": 10,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    872.33,
+    0,
+    935.92,
+    0,
+    999.52,
+    0,
+    1063.11,
+    0
+   ]
+  },
+  {
+   "id": 10,
+   "a": 10,
+   "b": 11,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    1063.11,
+    0,
+    1126.7,
+    0,
+    1190.3,
+    0,
+    1253.89,
+    0
+   ]
+  },
+  {
+   "id": 11,
+   "a": 11,
+   "b": 12,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    1253.89,
+    0,
+    1317.48,
+    0,
+    1381.08,
+    0,
+    1444.67,
+    0
+   ]
+  },
+  {
+   "id": 12,
+   "a": 12,
+   "b": 13,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    1444.67,
+    0,
+    1508.26,
+    0,
+    1571.85,
+    0,
+    1635.44,
+    0
+   ]
+  },
+  {
+   "id": 13,
+   "a": 13,
+   "b": 14,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    1635.44,
+    0,
+    1699.03,
+    0,
+    1762.63,
+    0,
+    1826.22,
+    0
+   ]
+  },
+  {
+   "id": 14,
+   "a": 14,
+   "b": 15,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    1826.22,
+    0,
+    1889.81,
+    0,
+    1953.41,
+    0,
+    2017.0,
+    0
+   ]
+  },
+  {
+   "id": 15,
+   "a": 15,
+   "b": 16,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2017.0,
+    0,
+    2080.59,
+    0,
+    2144.19,
+    0,
+    2207.78,
+    0
+   ]
+  },
+  {
+   "id": 16,
+   "a": 16,
+   "b": 17,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2207.78,
+    0,
+    2271.37,
+    0,
+    2334.97,
+    0,
+    2398.56,
+    0
+   ]
+  },
+  {
+   "id": 17,
+   "a": 17,
+   "b": 18,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2398.56,
+    0,
+    2462.15,
+    0,
+    2525.74,
+    0,
+    2589.33,
+    0
+   ]
+  },
+  {
+   "id": 18,
+   "a": 18,
+   "b": 19,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2589.33,
+    0,
+    2652.92,
+    0,
+    2716.52,
+    0,
+    2780.11,
+    0
+   ]
+  },
+  {
+   "id": 19,
+   "a": 19,
+   "b": 20,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2780.11,
+    0,
+    2843.7,
+    0,
+    2907.3,
+    0,
+    2970.89,
+    0
+   ]
+  },
+  {
+   "id": 20,
+   "a": 20,
+   "b": 21,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    2970.89,
+    0,
+    3034.48,
+    0,
+    3098.08,
+    0,
+    3161.67,
+    0
+   ]
+  },
+  {
+   "id": 21,
+   "a": 21,
+   "b": 22,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    3161.67,
+    0,
+    3225.26,
+    0,
+    3288.85,
+    0,
+    3352.44,
+    0
+   ]
+  },
+  {
+   "id": 22,
+   "a": 22,
+   "b": 23,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    3352.44,
+    0,
+    3416.03,
+    0,
+    3479.63,
+    0,
+    3543.22,
+    0
+   ]
+  },
+  {
+   "id": 23,
+   "a": 23,
+   "b": 24,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    3543.22,
+    0,
+    3606.81,
+    0,
+    3670.41,
+    0,
+    3734.0,
+    0
+   ]
+  },
+  {
+   "id": 24,
+   "a": 24,
+   "b": 25,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    3734.0,
+    0,
+    3797.59,
+    0,
+    3861.19,
+    0,
+    3924.78,
+    0
+   ]
+  },
+  {
+   "id": 25,
+   "a": 25,
+   "b": 26,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    3924.78,
+    0,
+    3988.37,
+    0,
+    4051.97,
+    0,
+    4115.56,
+    0
+   ]
+  },
+  {
+   "id": 26,
+   "a": 26,
+   "b": 27,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    4115.56,
+    0,
+    4179.15,
+    0,
+    4242.74,
+    0,
+    4306.33,
+    0
+   ]
+  },
+  {
+   "id": 27,
+   "a": 27,
+   "b": 28,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    4306.33,
+    0,
+    4369.92,
+    0,
+    4433.52,
+    0,
+    4497.11,
+    0
+   ]
+  },
+  {
+   "id": 28,
+   "a": 28,
+   "b": 29,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    4497.11,
+    0,
+    4560.7,
+    0,
+    4624.3,
+    0,
+    4687.89,
+    0
+   ]
+  },
+  {
+   "id": 29,
+   "a": 29,
+   "b": 30,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    4687.89,
+    0,
+    4751.48,
+    0,
+    4815.08,
+    0,
+    4878.67,
+    0
+   ]
+  },
+  {
+   "id": 30,
+   "a": 30,
+   "b": 31,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    4878.67,
+    0,
+    4942.26,
+    0,
+    5005.85,
+    0,
+    5069.44,
+    0
+   ]
+  },
+  {
+   "id": 31,
+   "a": 31,
+   "b": 32,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    5069.44,
+    0,
+    5133.03,
+    0,
+    5196.63,
+    0,
+    5260.22,
+    0
+   ]
+  },
+  {
+   "id": 32,
+   "a": 32,
+   "b": 33,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    5260.22,
+    0,
+    5323.81,
+    0,
+    5387.41,
+    0,
+    5451.0,
+    0
+   ]
+  },
+  {
+   "id": 33,
+   "a": 33,
+   "b": 34,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    5451.0,
+    0,
+    5514.59,
+    0,
+    5578.19,
+    0,
+    5641.78,
+    0
+   ]
+  },
+  {
+   "id": 34,
+   "a": 34,
+   "b": 35,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    5641.78,
+    0,
+    5705.37,
+    0,
+    5768.97,
+    0,
+    5832.56,
+    0
+   ]
+  },
+  {
+   "id": 35,
+   "a": 35,
+   "b": 36,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    5832.56,
+    0,
+    5896.15,
+    0,
+    5959.74,
+    0,
+    6023.33,
+    0
+   ]
+  },
+  {
+   "id": 36,
+   "a": 36,
+   "b": 37,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6023.33,
+    0,
+    6086.92,
+    0,
+    6150.52,
+    0,
+    6214.11,
+    0
+   ]
+  },
+  {
+   "id": 37,
+   "a": 37,
+   "b": 38,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6214.11,
+    0,
+    6277.7,
+    0,
+    6341.3,
+    0,
+    6404.89,
+    0
+   ]
+  },
+  {
+   "id": 38,
+   "a": 38,
+   "b": 39,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6404.89,
+    0,
+    6468.48,
+    0,
+    6532.08,
+    0,
+    6595.67,
+    0
+   ]
+  },
+  {
+   "id": 39,
+   "a": 39,
+   "b": 40,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6595.67,
+    0,
+    6659.26,
+    0,
+    6722.85,
+    0,
+    6786.44,
+    0
+   ]
+  },
+  {
+   "id": 40,
+   "a": 40,
+   "b": 41,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6786.44,
+    0,
+    6850.03,
+    0,
+    6913.63,
+    0,
+    6977.22,
+    0
+   ]
+  },
+  {
+   "id": 41,
+   "a": 41,
+   "b": 42,
+   "cls": "residential",
+   "prefab": "road_small_2lane",
+   "oneway": false,
+   "bridge": false,
+   "tunnel": false,
+   "name": "Landsvägen",
+   "bezier": [
+    6977.22,
+    0,
+    7040.81,
+    0,
+    7104.41,
+    0,
+    7168.0,
+    0
+   ]
+  }
+ ]
 }

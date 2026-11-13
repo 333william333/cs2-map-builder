@@ -114,15 +114,17 @@ export function ExportSection() {
             </dl>
           </div>
           <div className="text-xs">
-            <div className="mb-1 font-medium">How to import into CS2</div>
+            <div className="mb-1 font-medium">Turn it into a playable map</div>
+            <p className="mb-1.5 leading-snug text-muted">
+              The package is not a map yet. The importer mod builds and saves the map inside the game, and only
+              then does it appear under New Game.
+            </p>
             <ol className="list-decimal space-y-1 pl-5 leading-snug text-muted">
-              <li>Start Cities: Skylines II.</li>
-              <li>Open the Editor and create a new map.</li>
-              <li>Open the &quot;CS2 Map Builder&quot; tab.</li>
-              <li>Select the package {safeName}.</li>
-              <li>Click Import.</li>
-              <li>Wait until the import is done.</li>
-              <li>Save the map.</li>
+              <li>Start Cities: Skylines II (with the CS2 Map Builder mod installed).</li>
+              <li>In the main menu, open Options, then the &quot;CS2 Map Builder&quot; page.</li>
+              <li>Select the package {safeName} and click &quot;Create playable map&quot;.</li>
+              <li>Wait while the game opens the editor, imports and saves the map.</li>
+              <li>Start a New Game and pick the map {safeName}.</li>
             </ol>
           </div>
         </div>
@@ -178,6 +180,7 @@ export function ExportSection() {
                 Set the height scale to{' '}
                 <span className="font-semibold text-text">{result ? nf(result.terrain.heightScale, 1) : ''} m</span>.
               </li>
+              <li>Set a start area, add a road to the map edge and save the map. It then appears under New Game.</li>
             </ol>
           </div>
         </div>

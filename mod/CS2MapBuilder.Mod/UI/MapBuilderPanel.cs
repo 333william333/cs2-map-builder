@@ -84,6 +84,23 @@ namespace CS2MapBuilder.UI
                     },
                 }),
                 new Label { path = "status", displayNameAction = () => LocalizedString.Value(ImportSystem.StatusLine) },
+                new StringInputField
+                {
+                    path = "mapName",
+                    displayName = LocalizedString.Value("Map name"),
+                    accessor = new DelegateAccessor<string>(
+                        () => s()?.MapName ?? string.Empty,
+                        v => { if (s() != null) { s().MapName = v; s().ApplyAndSave(); } }),
+                },
+                Toggle("overwrite", "Overwrite my existing map with this name", x => x.OverwriteExistingMap, (x, v) => x.OverwriteExistingMap = v),
+                new Button
+                {
+                    path = "savePlayable",
+                    displayName = LocalizedString.Value("Save as playable map"),
+                    action = () => MapFlowSystem.RequestSaveCurrent(s()?.SelectedPackage, s()?.MapName, s()?.OverwriteExistingMap ?? false),
+                    disabled = () => ImportSystem.IsBusy || MapFlowSystem.IsBusy,
+                },
+                new Label { path = "mapStatus", displayNameAction = () => LocalizedString.Value(string.IsNullOrEmpty(MapFlowSystem.StatusLine) ? " " : MapFlowSystem.StatusLine) },
             };
             for (int i = 0; i < kLogLines; i++)
             {

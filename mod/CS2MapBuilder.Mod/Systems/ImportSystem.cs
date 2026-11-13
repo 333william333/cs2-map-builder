@@ -46,7 +46,23 @@ namespace CS2MapBuilder.Systems
         public static float Progress => Instance?.m_Progress ?? 0f;
         public static bool CanUndo => Instance?.m_LastRecord != null && Instance.m_LastRecord.Total > 0;
 
-        public static void RequestImport(string package) { try { Instance?.StartImport(package); } catch (Exception e) { ImportLog.Error("Import request failed", e); } }
+        public static void RequestImport(string package) { try { Instance?.StartImport(package, false); } catch (Exception e) { ImportLog.Error("Import request failed", e); } }
+
+        /// <summary>Starts an import with every step enabled (used by "Create playable map"). Returns false if it did not start.</summary>
+        public static bool RequestImportAllSteps(string package)
+        {
+            try { return Instance != null && Instance.StartImport(package, true); }
+            catch (Exception e) { ImportLog.Error("Import request failed", e); return false; }
+        }
+
+        /// <summary>Incremented each time an import finishes (completed, aborted or cancelled).</summary>
+        public static int FinishedCount { get; private set; }
+        /// <summary>True when the last finished import was aborted (invalid package, missing prefabs, cancel).</summary>
+        public static bool LastAborted { get; private set; }
+        /// <summary>Result text of the last finished import.</summary>
+        public static string LastResult { get; private set; } = string.Empty;
+        /// <summary>Manifest of the last package that passed validation (for map metadata).</summary>
+        public static Manifest LastManifest { get; private set; }
         public static void RequestCancel() { try { Instance?.Cancel(); } catch (Exception e) { ImportLog.Error("Cancel failed", e); } }
         public static void RequestUndo() { try { Instance?.StartUndo(); } catch (Exception e) { ImportLog.Error("Undo request failed", e); } }
 
@@ -241,17 +257,22 @@ namespace CS2MapBuilder.Systems
             return true;
         }
 
-        private void StartImport(string package)
+        private bool StartImport(string package, bool allSteps)
         {
-            if (!CheckContext("Import")) return;
+            if (!CheckContext("Import")) return false;
             if (string.IsNullOrWhiteSpace(package))
             {
                 m_Status = "Select a package first.";
                 ImportLog.Warn("Import refused: no package selected.");
-                return;
+                return false;
             }
 
             m_Opt = Options.From(MapBuilderSettings.Current);
+            if (allSteps)
+            {
+                m_Opt.Terrain = m_Opt.WorldMap = m_Opt.Climate = m_Opt.Water = m_Opt.Resources = true;
+                m_Opt.Networks = m_Opt.Names = m_Opt.Trees = m_Opt.StartTiles = true;
+            }
             m_PackageName = package;
             m_Pkg = null; m_Roads = null; m_Trees = null; m_Water = null; m_Climate = null;
             m_NetPrefabByKey = null; m_TreePrefabBySpecies = null; m_AppliedSeaLevel = float.NaN;
@@ -287,6 +308,7 @@ namespace CS2MapBuilder.Systems
             m_Mode = Mode.Importing;
             m_Status = "Importing " + package;
             AdvanceStep();
+            return true;
         }
 
         private void AddStep(string name, bool enabled, Func<StepReport, IEnumerator> body)
@@ -320,6 +342,12 @@ namespace CS2MapBuilder.Systems
 
         private void StopAll(string why)
         {
+            if (m_Mode == Mode.Importing)
+            {
+                LastAborted = true;
+                LastResult = why;
+                FinishedCount++;
+            }
             try { m_Current?.Dispose(); } catch (Exception) { }
             try { m_UndoJob?.Dispose(); } catch (Exception) { }
             m_Current = null;
@@ -415,6 +443,9 @@ namespace CS2MapBuilder.Systems
                 {
                     m_Mode = Mode.Idle;
                     m_Current = null;
+                    LastAborted = m_Aborted;
+                    LastResult = m_Status;
+                    FinishedCount++;
                     return;
                 }
                 var step = m_Steps[m_StepIndex];

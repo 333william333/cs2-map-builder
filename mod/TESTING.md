@@ -11,7 +11,7 @@ Settings live in two places: the **CS2 Map Builder** tab in the map editor (pack
 ## 0. Preparation (once)
 
 1. Build: run `mod\build.ps1` in PowerShell. It should end with `ALL TESTS PASSED` and `Done: ...\dist\CS2MapBuilder`.
-2. Install (your decision): `mod\install.ps1 -WithSample`. This copies the DLL to
+2. Install: `mod\install.ps1 -WithSample` (with the game closed). This copies the DLL to
    `...\Cities Skylines II\Mods\CS2MapBuilder\` and the sample package to `ModsData\CS2MapBuilder\packages\sample-package\`.
 3. Create test packages with the tool (from the `mod` folder):
    ```powershell
@@ -26,14 +26,46 @@ Settings live in two places: the **CS2 Map Builder** tab in the map editor (pack
    and the line `... loaded.` from `Logs\CS2MapBuilder.log` (the same lines are in import.log).
    If they do not appear, the mod did not load (question 13, toolchain-free build). Send `Logs\Modding.log` and `Player.log` instead.
 
-## 1. Loading and the map editor tab
+## 1. Create a playable map (first test, from the main menu)
+
+This is the main path: one button turns a package into a map listed under New Game.
+
+1. Main menu -> **Options -> CS2 Map Builder** (tab *Import*).
+2. **Package**: pick `sample-package`. **Map name** fills in as `sample-package` (type another name if you like).
+   Leave **Overwrite existing map** off.
+3. Click **Create playable map**. The game opens the Map Editor with a new map, imports the package with all steps,
+   fills in the map name, description, theme and start tiles, checks the editor's checklist and saves the map.
+   A notification in the corner shows the progress; the Options page shows the same status.
+4. When the notification says `Map 'sample-package' is saved and playable`, go back to the main menu ->
+   **New Game**. The map `sample-package` must be in the list. It is also in the editor's **Load Map** list.
+5. **Send:** every line from `import.log` that starts with `Map flow`, plus the `==== SUMMARY` block.
+   The lines `Map flow: checklist after ... frames: ...` say which checklist item (starting area, water in the
+   starting area, road outside connection, map name) was missing, if any.
+6. If it stops with `Could not finish automatically: ...`, the editor's own Save Map dialog is open: type the map
+   name shown in the message and click **Save Map**. Send the `Map flow` lines; they say which part failed.
+7. Run it a second time with the same name: it must refuse (`A map named 'sample-package' already exists`).
+   Tick **Overwrite existing map** to replace your own map; game maps and Paradox Mods maps are never overwritten.
+8. Leave the editor (Exit to main menu) while it is still importing: the status must say that nothing was saved.
+9. Repeat steps 2 to 5 with your own package (for example `MyMap`). Note the total time from the log line
+   `Map flow SUCCEEDED after ... s`.
+
+Note: `sample-package` has no heightmap, so the terrain is the editor's default new-map terrain. One small road
+(Landsvägen) runs from the crossing east to the map border, which gives the road outside connection the checklist
+needs; the small lake near the centre gives water in the starting area. If water has not filled in when the settle
+time ends, the map is saved but marked not playable: the message says so, and raising **Maximum settle time** under
+Advanced helps.
+
+If New Game does not list the map although the log says `saved and playable`, send the log and a screenshot of the
+editor's Load Map list.
+
+## 2. Loading and the map editor tab
 
 1. Main menu -> Editor -> Map Editor -> new map.
 2. Wait a few seconds. Look for a new tab with a package icon in the toolbar (next to Import/Prefab/Photo/Bulldozer).
 3. **Send:** the line `Editor tab 'CS2MapBuilder' registered (...)` or the error line `Could not register the editor tab`.
 4. If no tab appears, use **Options -> CS2 Map Builder** for all the steps below (the same buttons).
 
-## 2. North and height scale (questions 11.1 and 11.2)
+## 3. North and height scale (questions 11.1 and 11.2)
 
 Package: `marker-test`. It has a 400 m plateau in the **northwest** corner (900 x 900 m), a 250 m block in the
 **northeast** corner (450 x 450 m, smaller), a pit east of the center and a low strip along the **south** edge.
@@ -50,10 +82,10 @@ Base level 100 m, height scale 1000 m.
    If the plateau ended up in the **northeast** (mirrored east-west) there is no toggle: send a screenshot.
 6. If the heights in the probes differ from `package` by more than a meter or so: send the lines, this answers 11.2.
 
-## 3. Five roads (questions 11.3, 11.4, 11.11)
+## 4. Sample roads (questions 11.3, 11.4, 11.11)
 
-Package: `sample-package` (6 nodes, 5 roads: one junction with a Medium Road east-west, a Small Road north-south and a
-curved Small Road heading east, all named). Two classes mean two different frames: the link between Storgatan and Ågatan
+Package: `sample-package` (42 nodes, 41 roads: one junction with a Medium Road east-west, a Small Road north-south and a
+curved Small Road heading east that continues as Landsvägen to the east border, all named). Two classes mean two different frames: the link between Storgatan and Ågatan
 at node x=150 tests merging across frames.
 
 1. Tick only **Roads, rail, paths** and **Street names**. Import into an empty part of the map near the center
@@ -64,11 +96,11 @@ at node x=150 tests merging across frames.
    `Step Names ...` and any `definitions still pending`.
 4. If Ågatan does not connect to Storgatan: turn on **Attach to existing nodes** and import again (Undo first).
    Send the same lines.
-5. Click **Undo last import**. All five roads should disappear. **Send:** the lines `Undo of ...` and `Undo done: ...`.
+5. Click **Undo last import**. All sample roads should disappear. **Send:** the lines `Undo of ...` and `Undo done: ...`.
 6. Save the map after a fresh import (the Save dialog). Is the map marked as modified? Reload it: are the roads and
    names still there? (questions 11.3, 11.11)
 
-## 4. Water (question 11.6)
+## 5. Water (question 11.6)
 
 Package: `marker-test` again (the terrain from step 2 should still be there). Sea level 50 m, a lake with surface 90 m in the pit
 at x=+2000, z=0.
@@ -82,7 +114,7 @@ at x=+2000, z=0.
    **Water source ramp (frames)** to 0 and import again (Undo first removes the source).
    If it says LEGACY: click *Upgrade water sources* in the editor's Water panel and import again.
 
-## 5. Trees in increasing numbers (question 11.10)
+## 6. Trees in increasing numbers (question 11.10)
 
 Packages: `trees-10000`, then `trees-100000`, then `trees-300000`. The trees are in a 6 x 6 km square around the center,
 three species (birch, pine, oak), mixed ages.
@@ -96,7 +128,7 @@ three species (birch, pine, oak), mixed ages.
    If it freezes completely at 300,000: set **Maximum trees** lower and say at which count it worked.
 6. If the line says `trees not generated`: send it, because not all definitions were consumed.
 
-## 6. Climate, theme and start tiles (questions 11.7 and 11.8)
+## 7. Climate, theme and start tiles (questions 11.7 and 11.8)
 
 Package: `sample-package`.
 
@@ -109,7 +141,7 @@ Package: `sample-package`.
 5. If the start tiles do not show up immediately but exist after a reload: let us know (the border mesh is not updated).
    If they come out wrong: turn off **Replace start tiles** and test again, or turn the step off.
 
-## 7. Full package from the app (when the desktop app exports packages)
+## 8. Full package from the app (when the desktop app exports packages)
 
 1. Export a small area (a few km) from the app to the package folder. Tick all steps.
 2. If the import aborts with `prefabs not found in this game`: send that line and the file

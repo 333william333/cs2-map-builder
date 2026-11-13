@@ -113,7 +113,15 @@ namespace CS2MapBuilder.Systems
         {
             var st = m_Pkg.Manifest.StartTile;
             if (st == null) { r.Status = "skipped"; r.Notes.Add("manifest has no startTile"); yield break; }
+            r.Created = ApplyStartTiles(st.Col, st.Row, m_Opt.ReplaceStartTiles, r.Notes);
+        }
 
+        /// <summary>
+        /// Sets the start area to the 3x3 tiles around (col, row) of the 23x23 grid (row 0 = top). Returns tiles added.
+        /// Public so the playable-map flow can repair a missing start area.
+        /// </summary>
+        public int ApplyStartTiles(int col0, int row0, bool replace, List<string> notes)
+        {
             // Tile centres from their area nodes.
             var tiles = new List<(Entity e, float2 c)>();
             using (var arr = m_MapTileQuery.ToEntityArray(Allocator.TempJob))
@@ -131,30 +139,32 @@ namespace CS2MapBuilder.Systems
             float cell = 2f * PackageFormat.PlayableHalf / PackageFormat.TileGrid;
 
             var wanted = new List<Entity>();
+            int missing = 0;
             for (int dr = -1; dr <= 1; dr++)
                 for (int dc = -1; dc <= 1; dc++)
                 {
-                    int col = st.Col + dc, row = st.Row + dr;
+                    int col = col0 + dc, row = row0 + dr;
                     if (col < 0 || row < 0 || col >= PackageFormat.TileGrid || row >= PackageFormat.TileGrid) continue;
                     ImportPlanning.TileCenter(col, row, out float x, out float z);
                     var target = new float2(x, z);
                     var best = tiles.OrderBy(t => math.distancesq(t.c, target)).First();
-                    if (math.distance(best.c, target) > cell * 0.6f) { r.Skip("no tile near grid cell"); continue; }
+                    if (math.distance(best.c, target) > cell * 0.6f) { missing++; continue; }
                     if (!wanted.Contains(best.e)) wanted.Add(best.e);
                 }
 
             var list = m_MapTileSystem.GetStartTiles();
             int before = list.Length;
-            if (m_Opt.ReplaceStartTiles) list.Clear();
+            if (replace) list.Clear();
+            int added = 0;
             foreach (var e in wanted)
             {
                 bool present = false;
                 for (int i = 0; i < list.Length; i++) if (list[i] == e) { present = true; break; }
-                if (!present) { list.Add(e); r.Created++; }
+                if (!present) { list.Add(e); added++; }
             }
             foreach (var e in wanted) EntityManager.AddComponent<Updated>(e);
-            r.Notes.Add($"start tiles {before} -> {list.Length} (centre col {st.Col}, row {st.Row}; {tiles.Count} map tiles in the map; replace={m_Opt.ReplaceStartTiles})");
-            yield break;
+            notes?.Add($"start tiles {before} -> {list.Length} (centre col {col0}, row {row0}; {tiles.Count} map tiles in the map; replace={replace}; {missing} grid cells without a tile)");
+            return added;
         }
 
         // ================================================================== Finalize

@@ -17,7 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <GameReference Include="Game;Colossal.Core;Colossal.Logging;Colossal.IO.AssetDatabase;Colossal.UI.Binding;Colossal.Localization;Colossal.PSI.Common;Colossal.Mathematics;Colossal.Collections;UnityEngine.CoreModule;Unity.Burst;Unity.Collections;Unity.Entities;Unity.Mathematics;Newtonsoft.Json;netstandard" />
+    <GameReference Include="Game;Colossal.Core;Colossal.Logging;Colossal.IO.AssetDatabase;Colossal.UI.Binding;Colossal.Localization;Colossal.PSI.Common;Colossal.Mathematics;Colossal.Collections;Colossal.AssetPipeline;Colossal.IO;UnityEngine.CoreModule;Unity.Burst;Unity.Collections;Unity.Entities;Unity.Mathematics;Newtonsoft.Json;netstandard" />
     <Reference Include="@(GameReference)">
       <HintPath>$(ManagedPath)\%(Identity).dll</HintPath>
       <Private>false</Private>
