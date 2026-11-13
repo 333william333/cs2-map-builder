@@ -171,7 +171,7 @@ function absorb(g: Graph, c: number, o: number, s0: number, s1: number): boolean
 }
 
 /** push the run of chain c away from the line it crowds */
-function displace(g: Graph, c: number, hits: (Hit | null)[], i0: number, i1: number) {
+function displace(g: Graph, c: number, hits: (Hit | null)[], i0: number, i1: number, share = 1, margin = 7) {
   const C = g.chains[c];
   const p = C.pts;
   const n = p.length;
@@ -183,7 +183,7 @@ function displace(g: Graph, c: number, hits: (Hit | null)[], i0: number, i1: num
     const h = hits[j];
     if (!h) continue;
     const away = unit(p[j][0] - h.q[0], p[j][1] - h.q[1]);
-    const m = h.need - h.d + 7;
+    const m = (h.need - h.d) * share + margin;
     for (let i = Math.max(1, j - T); i <= Math.min(n - 2, j + T); i++) {
       const w = 1 - Math.abs(i - j) / (T + 1);
       if (m * w > mag[i]) {
@@ -244,6 +244,51 @@ export function fixPair(g: Graph, c1: number, c2: number, extra = 0): boolean {
     return absorb(g, minor, major, cum[bi0], cum[bi1]);
   }
   displace(g, minor, hits, 0, p.length - 1);
+  return true;
+}
+
+/** vertices of chain c closer than `need` to chain o */
+function hitsAgainst(g: Graph, c: number, o: number, need: number): (Hit | null)[] {
+  const p = g.chains[c].pts;
+  const O = g.chains[o];
+  const hits: (Hit | null)[] = new Array(p.length).fill(null);
+  for (let i = 0; i < p.length; i++) {
+    let bd = need * need;
+    let q: Pt | null = null;
+    for (let k = 0; k + 1 < O.pts.length; k++) {
+      const [ax, az] = O.pts[k];
+      const [bx, bz] = O.pts[k + 1];
+      const d2 = pointSegDist2(p[i][0], p[i][1], ax, az, bx, bz);
+      if (d2 < bd) {
+        bd = d2;
+        const t = projectSeg(p[i][0], p[i][1], ax, az, bx, bz);
+        q = [ax + (bx - ax) * t, az + (bz - az) * t];
+      }
+    }
+    if (q) hits[i] = { o, d: Math.sqrt(bd), q, need };
+  }
+  return hits;
+}
+
+/**
+ * Two important roads a little too close over a stretch: move both apart by half the deficit
+ * each (plus a margin), keeping their ends. Returns false when they do not crowd each other.
+ */
+export function offsetPair(g: Graph, c1: number, c2: number): boolean {
+  if (c1 === c2 || !g.chains[c1]?.alive || !g.chains[c2]?.alive) return false;
+  const A = g.chains[c1];
+  const B = g.chains[c2];
+  if (A.at.fixed && B.at.fixed) return false;
+  if (levelKey(A.at) !== levelKey(B.at)) return false;
+  const need = levelClearance(prefabOf(A.at), prefabOf(B.at), A.at.tunnel && B.at.tunnel) + 2;
+  const h1 = hitsAgainst(g, c1, c2, need);
+  const h2 = hitsAgainst(g, c2, c1, need);
+  if (!h1.some(Boolean) && !h2.some(Boolean)) return false;
+  // a ring keeps its circle: the other road takes the whole offset
+  const s1 = A.at.fixed ? 0 : B.at.fixed ? 1 : 0.5;
+  const s2 = 1 - s1;
+  if (s1 > 0) displace(g, c1, h1, 0, h1.length - 1, s1, 2.5);
+  if (s2 > 0) displace(g, c2, h2, 0, h2.length - 1, s2, 2.5);
   return true;
 }
 

@@ -166,8 +166,10 @@ export function fixStructureTransitions(g: Graph, height?: (x: number, z: number
       let missing = needHere - hit.d;
       const lb = g.len(id);
       const lt = g.len(hit.t);
-      const first = lb <= lt ? { s: id, at: n, L: lb } : { s: hit.t, at: hit.m, L: lt };
-      const second = first.s === id ? { s: hit.t, at: hit.m, L: lt } : { s: id, at: n, L: lb };
+      // the bridge keeps its real extent: the ramp goes into the tunnel approach first
+      const first = { s: hit.t, at: hit.m, L: lt };
+      const second = { s: id, at: n, L: lb };
+      void lb;
       const take1 = Math.min(missing / 2 + Math.max(0, missing / 2 - (second.L - 40)), first.L);
       trimEnd(g, first.s, first.at, take1);
       missing -= take1;

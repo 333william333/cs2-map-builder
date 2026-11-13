@@ -10,7 +10,7 @@ import { dist } from './geom';
 import type { Graph } from './graph';
 import { contractChain, isMinorClass, limitCurvature, reroute } from './generalize';
 import { resample, smoothGaussian } from './geom';
-import { fixPair } from './conflicts';
+import { fixPair, offsetPair } from './conflicts';
 import { flattenChain, gradeSeparate, movePortal } from './structures';
 import type { Violation } from './validate';
 import type { WNet } from './segment';
@@ -334,6 +334,10 @@ export function repairRound(
             levelKey(g.chains[c1].at) === 'G' && levelKey(g.chains[c2].at) === 'G' &&
             gradeSeparate(g, sn, [...new Set(g.nodes[sn].ch)].filter((o) => family(g.chains[o].at.cls) === 'road'))) {
             note('grade-separate');
+          } else if (v.kind === 'clearance' && sn < 0 && !isMinorClass(g.chains[c1].at.cls) &&
+            !isMinorClass(g.chains[c2].at.cls) && (ctx.tries.get(`o${c1}:${c2}`) ?? 0) < 2 && offsetPair(g, c1, c2)) {
+            ctx.tries.set(`o${c1}:${c2}`, (ctx.tries.get(`o${c1}:${c2}`) ?? 0) + 1);
+            note('offset');
           } else if (fixPair(g, c1, c2) || fixPair(g, c1, c2, 6)) {
             note('pair');
           } else {
@@ -449,5 +453,156 @@ export function repairRound(
     }
   }
   void choosePrefab;
+  return actions;
+}
+
+// ---------------------------------------------------------------- final mode (no major deletion)
+
+/** a major-road violation is resolved by a ladder of legal fallbacks; each step makes progress */
+export interface FinalStats {
+  rounds: number;
+  actions: Record<string, number>;
+  /** interchanges simplified by contracting a chain (connections kept) */
+  simplified: number;
+  /** violations that entered the final mode (diagnostics) */
+  first?: string[];
+}
+
+const isMajorChain = (g: Graph, c: number) => g.chains[c]?.alive && (!isMinorClass(g.chains[c].at.cls) || !!g.chains[c].at.fixed);
+
+/**
+ * True when the final cleanup could only resolve this violation by touching a major road (or a
+ * roundabout ring): every edge involved is major. Violations with a minor edge are left to the
+ * final cleanup, which then removes the minor piece.
+ */
+export function violationInvolvesMajor(v: Violation, w: WNet, eMap: number[], net: RoadNetwork): boolean {
+  const major = (k: number) => {
+    const e = w.edges[eMap[k]];
+    return !isMinorClass(e.cls) || !!e.fixed;
+  };
+  if (v.edges.length) return v.edges.every(major);
+  if (!v.nodes.length) return false;
+  let any = false;
+  for (let k = 0; k < net.edges.length; k++) {
+    const e = net.edges[k];
+    if (!v.nodes.includes(e.a) && !v.nodes.includes(e.b)) continue;
+    if (!major(k)) return false;
+    any = true;
+  }
+  return any;
+}
+
+export function finalRound(
+  g: Graph, w: WNet, net: RoadNetwork, eMap: number[], nMap: number[], viol: Violation[], ctx: RepairContext,
+  stats: FinalStats, tries: Map<string, number>, force: boolean,
+): number {
+  const touched = new Set<number>();
+  let actions = 0;
+  const count = (k: string) => (stats.actions[k] = (stats.actions[k] ?? 0) + 1);
+  const incident = (nodes: number[]) => {
+    const out = new Set<number>();
+    net.edges.forEach((e, k) => {
+      if (nodes.includes(e.a) || nodes.includes(e.b)) out.add(w.edges[eMap[k]].chain);
+    });
+    return [...out];
+  };
+  // only short chains may be contracted: anything longer would move junctions far and cascade
+  const contract = (c: number) => {
+    const C = g.chains[c];
+    if (!C?.alive || g.len(c) > 80) return false;
+    if (C.at.fixed) C.at = { ...C.at, fixed: false };
+    contractChain(g, c);
+    stats.simplified++;
+    count('simplified interchange');
+    return true;
+  };
+  const straighten = (c: number) => {
+    const C = g.chains[c];
+    const a = C.pts[0];
+    const b = C.pts[C.pts.length - 1];
+    const L = dist(a, b);
+    if (L < 40 || g.len(c) > 200) return false;
+    const n = Math.max(2, Math.ceil(L / 6));
+    const p: Pt[] = [];
+    for (let i = 0; i <= n; i++) p.push([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n]);
+    g.setPts(c, p);
+    count('straightened');
+    return true;
+  };
+  for (const v of viol) {
+    if (!violationInvolvesMajor(v, w, eMap, net)) continue;
+    let cs = [...new Set(v.edges.map((k) => w.edges[eMap[k]].chain))].filter((c) => g.chains[c]?.alive);
+    if (!cs.length && v.nodes.length) cs = incident(v.nodes).filter((c) => g.chains[c]?.alive);
+    if (!cs.length || cs.some((c) => touched.has(c))) continue;
+    cs.forEach((c) => touched.add(c));
+    actions++;
+    // 1. a minor partner gives way: whole dead-end piece, else merged into its junctions
+    const minor = cs.find((c) => !isMajorChain(g, c));
+    if (minor !== undefined) {
+      const M = g.chains[minor];
+      const dead = (n: number) => g.nodes[n].ch.length === 1 && !g.nodes[n].outside;
+      if (dead(M.a) || dead(M.b) || g.len(minor) >= 250) {
+        g.removeChain(minor);
+        count('minor piece removed');
+      } else {
+        contractChain(g, minor);
+        count('minor merged into junction');
+      }
+      continue;
+    }
+    // 2. majors only: legal fallbacks, escalating per chain
+    cs.sort((x, y) => g.len(x) - g.len(y));
+    const c = cs[0];
+    // attempts are counted per place (chain ids change when chains are split or joined)
+    const e0 = v.edges.length ? net.edges[v.edges[0]] : null;
+    const at = e0 ? e0.pts[e0.pts.length >> 1] : net.nodes[v.nodes[0]].p;
+    const key = `${v.kind}:${Math.round(at[0] / 40)},${Math.round(at[1] / 40)}`;
+    const t = tries.get(key) ?? 0;
+    tries.set(key, t + 1);
+    if (force || t >= 3) {
+      // last local steps: merge the stretch, else a short contraction
+      if (cs.length >= 2 && fixPair(g, cs[0], cs[1], 20)) count('merged stretch');
+      else if (!contract(c)) actions--;
+      continue;
+    }
+    switch (v.kind) {
+      case 'elevation': {
+        const st = [...cs, ...cs.flatMap((x) => [g.chains[x].a, g.chains[x].b].flatMap((n) => g.nodes[n].ch))]
+          .filter((x) => g.chains[x]?.alive && (g.chains[x].at.bridge || g.chains[x].at.tunnel));
+        if (st.length) {
+          st.sort((x, y) => g.len(x) - g.len(y));
+          flattenChain(g, st[0]);
+          count('surface junction instead of grade separation');
+        } else if (!contract(c)) actions--;
+        break;
+      }
+      case 'clearance':
+      case 'angle':
+        if (cs.length >= 2 && v.kind === 'clearance' && t <= 1 && offsetPair(g, cs[0], cs[1])) count('offset apart');
+        else if (cs.length >= 2 && fixPair(g, cs[0], cs[1], 12)) count('merged stretch');
+        else if (!contract(c)) actions--;
+        break;
+      case 'shape':
+      case 'length':
+        if (t <= 1 && simplifyChain(g, c)) count('smoothed');
+        else if (straighten(c)) { /* counted */ } else if (!contract(c)) actions--;
+        break;
+      case 'nodeGap': {
+        const [n1, n2] = v.nodes;
+        const g1 = w.nodes[nMap[n1]].gid;
+        const g2 = w.nodes[nMap[n2]].gid;
+        if (g1 >= 0 && g2 >= 0 && g.nodes[g1].alive && g.nodes[g2].alive && !g.nodes[g1].outside && !g.nodes[g2].outside) {
+          g.mergeNodes(g1, g2);
+          count('nodes merged');
+        } else if (t <= 1) {
+          ctx.avoid.push(net.nodes[n1].p, net.nodes[n2].p);
+          count('joints moved');
+        } else if (!contract(c)) actions--;
+        break;
+      }
+      default:
+        if (!(t === 0 && straighten(c)) && !contract(c)) actions--;
+    }
+  }
   return actions;
 }

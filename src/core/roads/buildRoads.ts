@@ -20,10 +20,11 @@ import {
 import { type SegCache, segmentGraph, type WNet } from './segment';
 import { isMinorClass } from './generalize';
 import { type ConflictStats, resolveChainConflicts } from './conflicts';
-import { newRepairContext, repairRound } from './repair';
+import { type FinalStats, finalRound, newRepairContext, repairRound, violationInvolvesMajor } from './repair';
 import { extendShortStructures, fixStructureTransitions } from './structures';
 
 const MAX_REPAIR_ROUNDS = 12;
+const MAX_FINAL_ROUNDS = 10;
 import { assignElevations, sampleHeight } from './elevation';
 import { findViolations } from './validate';
 
@@ -36,6 +37,9 @@ export interface BuildRoadsStats {
   /** last-resort deletions by class */
   droppedByClass: Partial<Record<RoadClass, number>>;
   dropLog: string[];
+  final?: FinalStats;
+  /** major segments dropped by the safety net after every legal fallback failed */
+  unsolvedMajor: number;
   /** violation kinds seen by the repair loop, per iteration */
   violations: Record<string, number>[];
   conflicts?: ConflictStats;
@@ -118,7 +122,7 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
     stages[k] = now - t;
     t = now;
   };
-  lastStats = { stages, resolverIterations: 0, droppedEdges: 0, droppedByClass: {}, dropLog: [], violations: [] };
+  lastStats = { stages, resolverIterations: 0, droppedEdges: 0, droppedByClass: {}, dropLog: [], violations: [], unsolvedMajor: 0 };
   if (!settings.enabled || !vectors?.ways?.length) return { nodes: [], edges: [] };
   const detail = Math.max(0, Math.min(1, Number.isFinite(settings.detail) ? settings.detail : 0.7));
   const s = { ...settings, detail };
@@ -238,6 +242,34 @@ export function buildRoads(vectors: VectorData, terrain: TerrainResult, settings
     w = segmentGraph(g, ctx.avoid, segCache);
     t0 = tick('segment', t0);
   }
+  // final mode: no violation may remain on a major road; each step is a legal fallback that keeps
+  // the route (offset, merged stretch, surface junction, simplified interchange), never a deletion
+  const fin: FinalStats = { rounds: 0, actions: {}, simplified: 0 };
+  lastStats.final = fin;
+  const finalTries = new Map<string, number>();
+  for (let fr = 0; fr < MAX_FINAL_ROUNDS; fr++) {
+    const em = emit(w, ground, elev, false);
+    const viol = findViolations(em.net);
+    const major = viol.filter((v) => violationInvolvesMajor(v, w, em.eMap, em.net));
+    if (!major.length) break;
+    if (fr === 0) fin.first = major.map((v) => {
+      const e0 = em.net.edges[v.edges[0]];
+      const at = e0 ? e0.pts[e0.pts.length >> 1] : v.nodes.length ? em.net.nodes[v.nodes[0]].p : [0, 0];
+      return `${v.kind} ${v.edges.map((k) => w.edges[em.eMap[k]].cls + (w.edges[em.eMap[k]].tunnel ? '(T)' : w.edges[em.eMap[k]].bridge ? '(B)' : '') + (w.edges[em.eMap[k]].fixed ? '(R)' : '')).join('/')} @ ${Math.round(at[0])},${Math.round(at[1])}: ${v.msg}`;
+    });
+    fin.rounds = fr + 1;
+    const firstNew = g.chains.length;
+    const n = finalRound(g, w, em.net, em.eMap, em.nMap, major, ctx, fin, finalTries, fr >= 7);
+    if (!n) break;
+    g.dissolveAll();
+    contractShort(g, firstNew);
+    g.dissolveAll();
+    computeImportance(g);
+    w = segmentGraph(g, ctx.avoid, segCache);
+    const el = assignElevations(w, terrain);
+    ground = el.ground;
+    elev = el.elev;
+  }
   lap('segment');
   snapWork('segment', w);
   const res = resolve(w, ground, elev);
@@ -316,7 +348,12 @@ function resolve(w: WNet, ground: Float64Array, elev: Float64Array): { net: Road
     if (arr) arr.push(k);
     else byChain.set(e.chain, [k]);
   });
+  let allowMajor = false;
   const kill = (k: number) => {
+    // a segment of a major road or a roundabout ring is only dropped as the very last safety net,
+    // after every legal fallback failed; it is counted as unsolved
+    if ((!isMinorClass(w.edges[k].cls) || w.edges[k].fixed) && !allowMajor) return;
+    if ((!isMinorClass(w.edges[k].cls) || w.edges[k].fixed) && w.edges[k].alive && lastStats) lastStats.unsolvedMajor++;
     if (w.edges[k].alive) {
       w.edges[k].alive = false;
       dropped++;
@@ -346,6 +383,7 @@ function resolve(w: WNet, ground: Float64Array, elev: Float64Array): { net: Road
     }
     if (!viol.length) return { net, iterations, dropped };
     const hard = iter >= 15;
+    allowMajor = true;
     const deg = new Int32Array(net.nodes.length);
     const inc: number[][] = net.nodes.map(() => []);
     net.edges.forEach((e, k) => {
@@ -376,8 +414,8 @@ function resolve(w: WNet, ground: Float64Array, elev: Float64Array): { net: Road
         case 'angle': {
           if (v.edges.length < 2) break;
           const vic = weaker(v.edges[0], v.edges[1]);
-          if (terminal(vic) || w.edges[eMap[v.edges[0]]].chain === w.edges[eMap[v.edges[1]]].chain) kill(eMap[vic]);
-          else killChain(eMap[vic]);
+          kill(eMap[vic]);
+          if (!terminal(vic) && w.edges[eMap[v.edges[0]]].chain !== w.edges[eMap[v.edges[1]]].chain) killChain(eMap[vic]);
           break;
         }
         case 'nodeGap': {

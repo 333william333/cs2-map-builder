@@ -128,6 +128,7 @@ const prefabs = new Map<string, number>();
 for (const e of net.edges) prefabs.set(e.prefab, (prefabs.get(e.prefab) ?? 0) + 1);
 console.log('prefabs: ' + [...prefabs.entries()].map(([k, v]) => `${k} ${v}`).join(', '));
 console.log(`\nbuild ${ms} ms, validate ${msVal} ms; stages ${JSON.stringify(lastBuildRoadsStats()?.stages)}`);
+console.log(`final mode: ${JSON.stringify(lastBuildRoadsStats()?.final?.actions)}, simplified interchanges ${lastBuildRoadsStats()?.final?.simplified ?? 0}, unsolved major segments ${lastBuildRoadsStats()?.unsolvedMajor ?? 0}`);
 console.log(`repair: ${lastBuildRoadsStats()?.droppedEdges} edges dropped in ${lastBuildRoadsStats()?.resolverIterations} resolver iterations ${JSON.stringify(lastBuildRoadsStats()?.droppedByClass)}`);
 console.log(`\nviolations: ${violations.length}`);
 for (const v of violations.slice(0, 50)) console.log('  ' + v);

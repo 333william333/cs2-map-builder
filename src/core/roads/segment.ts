@@ -180,7 +180,9 @@ export function segmentGraph(g: Graph, avoid: Pt[] = [], cache?: SegCache): WNet
       }
       if (ok) cached = ce.cuts;
     }
+    // a roundabout arc keeps its circle: its joints need not avoid nearby nodes
     let cuts = cached ??
+      (c.at.fixed ? solve(false, tmax, firstMin, lastMin) : null) ??
       solve(true, tmax, firstMin, lastMin) ??
       solve(true, Math.PI / 2, firstMin, lastMin) ??
       solve(true, Math.PI / 2, firstMin, lastMin, 27) ??

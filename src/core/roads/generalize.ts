@@ -414,8 +414,48 @@ export function roundabouts(g: Graph, scale = 1): RoundaboutStats {
       if (overlap) break;
     }
     if (overlap) {
-      collapse(group, nodes, cx, cz, 'overlaps another road', realR, armNodes.length);
-      continue;
+      // shift the unrelated neighbours outward so the ring fits (up to 25 m), else collapse
+      const Rneed = R + 6;
+      const moves: { id: number; pts: Pt[] }[] = [];
+      const nodeMoves = new Map<number, Pt>();
+      let ok = true;
+      for (const id of g.live()) {
+        if (related.has(id)) continue;
+        const c = g.chains[id];
+        if (levelKey(c.at) !== 'G' || c.at.fixed) continue;
+        const p = c.pts;
+        const out: Pt[] = p.map((q) => [q[0], q[1]]);
+        let touched = false;
+        for (let i = 0; i < p.length; i++) {
+          const d = Math.hypot(p[i][0] - cx, p[i][1] - cz);
+          if (d >= Rneed) continue;
+          const push = Rneed - d;
+          if (push > 25) ok = false;
+          touched = true;
+          const u: Pt = d > 0.01 ? [(p[i][0] - cx) / d, (p[i][1] - cz) / d] : [1, 0];
+          for (let j = Math.max(0, i - 5); j <= Math.min(p.length - 1, i + 5); j++) {
+            const wgt = 1 - Math.abs(j - i) / 6;
+            const nx = p[j][0] + u[0] * push * wgt;
+            const nz = p[j][1] + u[1] * push * wgt;
+            if (Math.hypot(nx - cx, nz - cz) > Math.hypot(out[j][0] - cx, out[j][1] - cz)) out[j] = [nx, nz];
+          }
+        }
+        if (!touched) continue;
+        for (const [k, n] of [[0, c.a], [p.length - 1, c.b]] as const) {
+          if (dist(out[k], p[k]) > 1e-6) {
+            if (g.nodes[n].outside || nodes.has(n)) ok = false;
+            nodeMoves.set(n, out[k]);
+          }
+        }
+        moves.push({ id, pts: out });
+      }
+      if (!ok || !moves.length) {
+        collapse(group, nodes, cx, cz, 'overlaps another road', realR, armNodes.length);
+        continue;
+      }
+      for (const m of moves) g.setPts(m.id, m.pts);
+      for (const [n, q] of nodeMoves) g.setNodePos(n, q[0], q[1]);
+      stats.reasons['neighbour shifted'] = (stats.reasons['neighbour shifted'] ?? 0) + 1;
     }
     // rebuild
     for (const k of group) g.removeChain(k);
