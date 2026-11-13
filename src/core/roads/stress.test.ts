@@ -61,7 +61,10 @@ describe('randomised stress', () => {
       console.log(`seed ${seed}: ${net.nodes.length} nodes, ${net.edges.length} edges, ${ms} ms`, JSON.stringify(lastBuildRoadsStats()));
       expect(v).toEqual([]);
       expect(net.edges.length).toBeGreaterThan(50);
-      expect(ms).toBeLessThan(20000);
+      // Runaway guard, not a performance target: seed 1 (14k edges of random worst-case input) takes
+      // about 16 s alone and more when the whole suite runs in parallel. Real areas are measured with
+      // scripts/roads-report.ts (Uppsala about 7 s).
+      expect(ms).toBeLessThan(30000);
     }, 60000);
   }
 
