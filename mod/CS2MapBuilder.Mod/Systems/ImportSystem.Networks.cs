@@ -265,13 +265,22 @@ namespace CS2MapBuilder.Systems
             }
 
             int conflicts = 0;
+            NameApplySystem.ResetCounters();
             foreach (var kv in byAggregate)
             {
                 var best = kv.Value.OrderByDescending(x => x.Value).First();
                 if (kv.Value.Count > 1) conflicts++;
-                m_NameSystem.SetCustomName(kv.Key, best.Key);
-                r.Created++;
+                // Applied at UIUpdate by NameApplySystem: SetCustomName cannot run at ToolUpdate (EndFrameBarrier not yet allowed).
+                NameApplySystem.Enqueue(kv.Key, best.Key);
             }
+            int waited = 0;
+            while (NameApplySystem.Pending > 0 && waited < m_Opt.SettleTimeout)
+            {
+                waited++;
+                yield return WaitFrames.NextFrame;
+            }
+            r.Created = NameApplySystem.Applied;
+            r.Fail("names not applied: " + (NameApplySystem.LastError ?? "timeout"), NameApplySystem.Failed + NameApplySystem.Pending);
             r.Skip("named edges without Aggregated component", noAggregate);
             r.Skip("named edges whose aggregate never appeared", unmatched);
             if (conflicts > 0) r.Notes.Add($"{conflicts} aggregates covered several names; the most frequent name was used");

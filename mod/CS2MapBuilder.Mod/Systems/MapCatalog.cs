@@ -19,6 +19,11 @@ namespace CS2MapBuilder.Systems
             public string DisplayName;
             /// <summary>True when the map lives in the user's own database (the Maps folder), so it may be overwritten.</summary>
             public bool IsUserMap;
+            /// <summary>Shipped with the game (AssetDatabase&lt;Game&gt;); listed under New Game regardless of isPlayable.</summary>
+            public bool IsGameMap;
+            /// <summary>MapInfo.isPlayable: New Game lists a non-game map only when this is true (MenuUISystem.FilterMaps).</summary>
+            public bool IsPlayable;
+            public bool ListedUnderNewGame => IsGameMap || IsPlayable;
         }
 
         /// <summary>All maps by display name (case-insensitive). Never throws; returns an empty list on errors.</summary>
@@ -40,6 +45,8 @@ namespace CS2MapBuilder.Systems
                                 Guid = asset.id,
                                 DisplayName = meta.displayName,
                                 IsUserMap = ReferenceEquals(asset.database, AssetDatabase.user),
+                                IsGameMap = asset.database is AssetDatabase<Colossal.IO.AssetDatabase.Game>,
+                                IsPlayable = SafePlayable(asset),
                             });
                         }
                         catch (Exception) { }
@@ -51,6 +58,23 @@ namespace CS2MapBuilder.Systems
                 ImportLog.Warn("Could not list maps: " + e.Message);
             }
             return list;
+        }
+
+        private static bool SafePlayable(MapMetadata asset)
+        {
+            try { return asset.target != null && asset.target.isPlayable; } catch (Exception) { return false; }
+        }
+
+        /// <summary>Folder the editor's Save Map writes user maps to: user data + EnvPath special path for MapMetadata ("Maps/&lt;user id&gt;").</summary>
+        public static string UserMapsFolder
+        {
+            get
+            {
+                string special = null;
+                try { special = Colossal.PSI.Environment.EnvPath.GetSpecialPath<MapMetadata>(); } catch (Exception) { }
+                string rel = string.IsNullOrEmpty(special) ? "Maps" : special;
+                return Path.GetFullPath(Path.Combine(ModPaths.UserData, rel.Replace('/', Path.DirectorySeparatorChar)));
+            }
         }
 
         public static MapRef Find(string name)

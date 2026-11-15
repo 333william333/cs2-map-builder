@@ -35,8 +35,21 @@ namespace CS2MapBuilder.Systems
             m_WasInMenu = inMenu;
         }
 
+        private bool m_PathsLogged;
+
         private void Scan()
         {
+            if (!m_PathsLogged)
+            {
+                m_PathsLogged = true;
+                string userRoot = null;
+                try { userRoot = Colossal.IO.AssetDatabase.AssetDatabase<Colossal.IO.AssetDatabase.User>.instance.rootPath; } catch (Exception) { }
+                ImportLog.Info("Saved user maps are written to: " + MapCatalog.UserMapsFolder +
+                               " (MapPanelSystem.SaveMap -> AssetDatabase.user, SaveHelpers.GetAssetDataPath<MapMetadata>; user database root: " + (userRoot ?? "unknown") + ")");
+                ImportLog.Info("New Game custom maps list reads: AssetDatabase.global maps (MenuUISystem.UpdateMaps -> MenuHelpers.UpdateMeta), " +
+                               "showing non-game maps only when MapInfo.isPlayable is true. Maps known now: " +
+                               string.Join(", ", MapCatalog.All().Select(m => $"{m.DisplayName}{(m.IsGameMap ? " [game]" : m.IsUserMap ? " [user]" : " [other]")}{(m.ListedUnderNewGame ? "" : " (not playable, hidden)")}")));
+            }
             if (!(MapBuilderSettings.Current?.NotifyNewPackages ?? true)) return;
             var packages = PackageReader.ListPackages(ModPaths.Packages);
             if (packages.Count == 0) return;

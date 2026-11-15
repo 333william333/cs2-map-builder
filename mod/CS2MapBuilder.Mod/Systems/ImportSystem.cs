@@ -63,6 +63,8 @@ namespace CS2MapBuilder.Systems
         public static string LastResult { get; private set; } = string.Empty;
         /// <summary>Manifest of the last package that passed validation (for map metadata).</summary>
         public static Manifest LastManifest { get; private set; }
+        /// <summary>One summary line per step of the last finished import.</summary>
+        public static List<string> LastStepLines { get; private set; } = new List<string>();
         public static void RequestCancel() { try { Instance?.Cancel(); } catch (Exception e) { ImportLog.Error("Cancel failed", e); } }
         public static void RequestUndo() { try { Instance?.StartUndo(); } catch (Exception e) { ImportLog.Error("Undo request failed", e); } }
 
@@ -248,9 +250,11 @@ namespace CS2MapBuilder.Systems
                 return false;
             }
             bool editor = gm.gameMode == GameMode.Editor;
-            if (!editor && !(MapBuilderSettings.Current?.AllowOutsideEditor ?? false))
+            if (!editor)
             {
-                m_Status = action + " refused: open the Map Editor (or enable 'Allow import outside the Map Editor').";
+                // Outside the editor there is no terrain, climate, map tiles or editor water state (in-game evidence:
+                // a main-menu import failed in Terrain, Climate and StartTiles). Never allowed.
+                m_Status = action + " refused: this only works in the Map Editor. From the main menu use 'Create playable map'.";
                 ImportLog.Warn(m_Status + " Current mode: " + gm.gameMode);
                 return false;
             }
@@ -445,6 +449,7 @@ namespace CS2MapBuilder.Systems
                     m_Current = null;
                     LastAborted = m_Aborted;
                     LastResult = m_Status;
+                    LastStepLines = m_Steps.Select(st => st.Report.Line()).ToList();
                     FinishedCount++;
                     return;
                 }

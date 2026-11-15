@@ -35,6 +35,8 @@ namespace CS2MapBuilder
                 updateSystem.UpdateAt<EditorTabRegistrationSystem>(SystemUpdatePhase.UIUpdate);
                 updateSystem.UpdateAt<MapFlowSystem>(SystemUpdatePhase.UIUpdate);
                 updateSystem.UpdateAt<PackageWatchSystem>(SystemUpdatePhase.UIUpdate);
+                updateSystem.UpdateAt<NameApplySystem>(SystemUpdatePhase.UIUpdate);
+                updateSystem.UpdateAt<AutorunSystem>(SystemUpdatePhase.UIUpdate);
 
                 ImportLog.Info("CS2 Map Builder importer loaded. Options > CS2 Map Builder > Create playable map (main menu), or the 'CS2 Map Builder' tab in the Map Editor.");
             }

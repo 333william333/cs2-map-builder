@@ -48,34 +48,21 @@ namespace CS2MapBuilder.Systems
             }, res => { height = res[0]; world = res[1]; });
             foreach (var w in rep.Warnings) r.Notes.Add(w);
 
+            // FinalizeTerrainData (called by SetTerrainProperties and both Replace* methods) dereferences the current
+            // heightmap texture, and SetWorldHeightmap compares against it: in-game evidence (main menu run) was a
+            // NullReferenceException in SetTerrainProperties when no terrain exists. So: set the scale on the property
+            // (ReplaceHeightmap passes heightScaleOffset into FinalizeTerrainData), replace the playable heightmap first
+            // (it creates the heightmap texture), and the world map second.
+            if (m_TerrainSystem.heightmap == null && height == null)
+                throw new InvalidOperationException("the map has no terrain yet and the package has no heightmap.png; a world map alone cannot be applied");
             float2 before = m_TerrainSystem.heightScaleOffset;
-            m_TerrainSystem.SetTerrainProperties(new float2(m.HeightScale, 0f));
-            r.Notes.Add($"height scale/offset {before.x}/{before.y} -> {m_TerrainSystem.heightScaleOffset.x}/{m_TerrainSystem.heightScaleOffset.y}");
+            m_TerrainSystem.heightScaleOffset = new float2(m.HeightScale, 0f);
+            r.Notes.Add($"height scale/offset {before.x}/{before.y} -> {m.HeightScale}/0 (terrain had a heightmap: {m_TerrainSystem.heightmap != null})");
             yield return WaitFrames.NextFrame;
-
-            if (world != null)
-            {
-                SetProgress(r, 0.3f, "world map");
-                var tex = MakeHeightTexture(world, m_Opt.FlipRows, "CS2MapBuilder World");
-                if (!TerrainSystem.IsValidHeightmapFormat(tex))
-                {
-                    r.Fail("world map texture format rejected by TerrainSystem.IsValidHeightmapFormat");
-                    UnityEngine.Object.Destroy(tex);
-                }
-                else
-                {
-                    m_TerrainSystem.ReplaceWorldHeightmap(tex);
-                    // The terrain system keeps the texture itself outside the editor; only destroy it if it was copied.
-                    if (!ReferenceEquals(m_TerrainSystem.worldHeightmap, tex)) UnityEngine.Object.Destroy(tex);
-                    r.Created++;
-                    ImportLog.Info("World heightmap replaced.");
-                }
-                yield return new WaitFrames(m_Opt.WaitFrames);
-            }
 
             if (height != null)
             {
-                SetProgress(r, 0.6f, "heightmap");
+                SetProgress(r, 0.3f, "heightmap");
                 var tex = MakeHeightTexture(height, m_Opt.FlipRows, "CS2MapBuilder Heightmap");
                 if (!TerrainSystem.IsValidHeightmapFormat(tex))
                 {
@@ -85,11 +72,46 @@ namespace CS2MapBuilder.Systems
                 {
                     m_TerrainSystem.ReplaceHeightmap(tex);
                     r.Created++;
-                    ImportLog.Info("Playable heightmap replaced.");
+                    ImportLog.Info($"Playable heightmap replaced (height scale now {m_TerrainSystem.heightScaleOffset.x}).");
                 }
                 UnityEngine.Object.Destroy(tex);
                 yield return new WaitFrames(m_Opt.WaitFrames);
+            }
+            else if (m_TerrainSystem.heightmap != null)
+            {
+                // Scale only: apply it through the public path now that a heightmap is known to exist.
+                m_TerrainSystem.SetTerrainProperties(new float2(m.HeightScale, 0f));
+            }
 
+            if (world != null)
+            {
+                SetProgress(r, 0.6f, "world map");
+                if (m_TerrainSystem.heightmap == null)
+                {
+                    r.Fail("world map skipped: no playable heightmap exists");
+                }
+                else
+                {
+                    var tex = MakeHeightTexture(world, m_Opt.FlipRows, "CS2MapBuilder World");
+                    if (!TerrainSystem.IsValidHeightmapFormat(tex))
+                    {
+                        r.Fail("world map texture format rejected by TerrainSystem.IsValidHeightmapFormat");
+                        UnityEngine.Object.Destroy(tex);
+                    }
+                    else
+                    {
+                        m_TerrainSystem.ReplaceWorldHeightmap(tex);
+                        // The terrain system keeps the texture itself outside the editor; only destroy it if it was copied.
+                        if (!ReferenceEquals(m_TerrainSystem.worldHeightmap, tex)) UnityEngine.Object.Destroy(tex);
+                        r.Created++;
+                        ImportLog.Info("World heightmap replaced.");
+                    }
+                }
+                yield return new WaitFrames(m_Opt.WaitFrames);
+            }
+
+            if (height != null)
+            {
                 // Report what the game now has at known points: answers the north and height-mapping questions (MOD_SPIKE 11.1/11.2).
                 var data = m_TerrainSystem.GetHeightData(true);
                 if (data.isCreated)
@@ -162,7 +184,12 @@ namespace CS2MapBuilder.Systems
             try
             {
                 Entity current = m_ClimateSystem.currentClimate;
-                if (current == Entity.Null || !EntityManager.Exists(current)) throw new InvalidOperationException("no current climate");
+                if (current == Entity.Null || !EntityManager.Exists(current))
+                {
+                    current = FirstClimatePrefab();
+                    if (current == Entity.Null) throw new InvalidOperationException("no current climate and no ClimatePrefab in the prefab system");
+                    r.Notes.Add("no current climate (not a loaded map?); using the first climate prefab as the base");
+                }
                 var baseClimate = m_PrefabSystem.GetPrefab<ClimatePrefab>(current);
                 var clone = (ClimatePrefab)baseClimate.Clone("CS2MapBuilder " + (string.IsNullOrEmpty(m.Name) ? m_PackageName : m.Name));
                 r.Notes.Add($"base climate '{baseClimate.name}' cloned as '{clone.name}'");
@@ -238,6 +265,14 @@ namespace CS2MapBuilder.Systems
             }
         }
 
+        private Entity FirstClimatePrefab()
+        {
+            using (var arr = m_PrefabQuery.ToEntityArray(Allocator.TempJob))
+                foreach (var e in arr)
+                    if (m_PrefabSystem.TryGetPrefab<ClimatePrefab>(e, out var c) && c != null) return e;
+            return Entity.Null;
+        }
+
         // ================================================================== Water
 
         private sealed class RampedSource { public Entity Entity; public float Radius; }
@@ -254,7 +289,14 @@ namespace CS2MapBuilder.Systems
             bool hasSea = m_Water?.HasSea ?? m.HasSea;
 
             if (m_WaterSystem.UseLegacyWaterSources)
-                r.Notes.Add("WARNING: this map uses LEGACY water sources. Press 'Upgrade water sources' in the editor's Water panel and import again for correct lakes.");
+            {
+                // Same as the editor Water panel's "Upgrade water sources" button (WaterPanelSystem): the setter
+                // runs UpgradeToNewWaterSystem(). Done before any source is created.
+                m_WaterSystem.UseLegacyWaterSources = false;
+                r.Notes.Add($"map used legacy water sources: upgraded to the new water system (now legacy={m_WaterSystem.UseLegacyWaterSources})");
+                yield return new WaitFrames(m_Opt.WaitFrames);
+            }
+            else r.Notes.Add("map uses the new water system");
 
             if (m_Opt.SetSeaLevel)
             {

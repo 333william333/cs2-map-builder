@@ -19,8 +19,8 @@ namespace CS2MapBuilder.Settings
     /// The step checkboxes are shared with the editor panel.
     /// </summary>
     [FileLocation(ModPaths.ModId)]
-    [SettingsUIGroupOrder(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup, kSafetyGroup)]
-    [SettingsUIShowGroupName(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup, kSafetyGroup)]
+    [SettingsUIGroupOrder(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup)]
+    [SettingsUIShowGroupName(kPackageGroup, kPlayableGroup, kStepsGroup, kActionsGroup, kGeometryGroup, kBatchGroup, kWaterGroup, kMapFlowGroup)]
     public sealed class MapBuilderSettings : ModSetting
     {
         public const string kImportTab = "Import";
@@ -81,11 +81,13 @@ namespace CS2MapBuilder.Settings
         [SettingsUISection(kImportTab, kPlayableGroup)]
         [SettingsUIButton]
         [SettingsUIButtonGroup("PlayableActions")]
+        [SettingsUIDisableByCondition(typeof(MapBuilderSettings), nameof(IsNotInMainMenu))]
         public bool CreatePlayableMap { set { MapFlowSystem.RequestCreate(SelectedPackage, MapName, OverwriteExistingMap); } }
 
         [SettingsUISection(kImportTab, kPlayableGroup)]
         [SettingsUIButton]
         [SettingsUIButtonGroup("PlayableActions")]
+        [SettingsUIDisableByCondition(typeof(MapBuilderSettings), nameof(IsNotInEditor))]
         public bool SaveAsPlayableMap { set { MapFlowSystem.RequestSaveCurrent(SelectedPackage, MapName, OverwriteExistingMap); } }
 
         [SettingsUISection(kImportTab, kPlayableGroup)]
@@ -110,6 +112,7 @@ namespace CS2MapBuilder.Settings
         [SettingsUISection(kImportTab, kActionsGroup)]
         [SettingsUIButton]
         [SettingsUIButtonGroup("ImportActions")]
+        [SettingsUIDisableByCondition(typeof(MapBuilderSettings), nameof(IsNotInEditor))]
         public bool ImportNow { set { ImportSystem.RequestImport(SelectedPackage); } }
 
         [SettingsUISection(kImportTab, kActionsGroup)]
@@ -121,6 +124,7 @@ namespace CS2MapBuilder.Settings
         [SettingsUIButton]
         [SettingsUIConfirmation]
         [SettingsUIButtonGroup("ImportActions")]
+        [SettingsUIDisableByCondition(typeof(MapBuilderSettings), nameof(IsNotInEditor))]
         public bool UndoLastImport { set { ImportSystem.RequestUndo(); } }
 
         // ------------------------------------------------------------------ Advanced: geometry / orientation
@@ -198,7 +202,6 @@ namespace CS2MapBuilder.Settings
         // ------------------------------------------------------------------ Advanced: safety
 
         /// <summary>Nothing runs outside the Map Editor unless this is on.</summary>
-        [SettingsUISection(kAdvancedTab, kSafetyGroup)] public bool AllowOutsideEditor { get; set; }
 
         public override void SetDefaults()
         {
@@ -232,7 +235,6 @@ namespace CS2MapBuilder.Settings
             SetSeaLevel = true;
             WaterRampFrames = 120;
             SkipTreesBelowSeaLevel = true;
-            AllowOutsideEditor = false;
         }
 
         // ------------------------------------------------------------------ getters used by attributes
@@ -248,6 +250,12 @@ namespace CS2MapBuilder.Settings
         }
 
         public int GetPackagesVersion() => s_PackagesVersion;
+
+        /// <summary>The manual import, undo and save act on the map open in the Map Editor; they are disabled elsewhere.</summary>
+        public bool IsNotInEditor() => Game.SceneFlow.GameManager.instance?.gameMode != Game.GameMode.Editor;
+
+        /// <summary>Create playable map starts a new editor map, so it is only offered in the main menu.</summary>
+        public bool IsNotInMainMenu() => Game.SceneFlow.GameManager.instance?.gameMode != Game.GameMode.MainMenu;
 
         public LocalizedString GetStatusText()
         {
@@ -278,7 +286,6 @@ namespace CS2MapBuilder.Settings
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kGeometryGroup), "Orientation and geometry (unknowns, see TESTING.md)" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kBatchGroup), "Batching and timing" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kWaterGroup), "Water" },
-                { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kSafetyGroup), "Safety" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kPlayableGroup), "Playable map (start from the main menu)" },
                 { m_S.GetOptionGroupLocaleID(MapBuilderSettings.kMapFlowGroup), "Create playable map: timing" },
                 { "Editor.TOOL[" + MapBuilderEditorToolIds.ToolId + "]", "CS2 Map Builder" },
@@ -311,7 +318,7 @@ namespace CS2MapBuilder.Settings
             Add(nameof(MapBuilderSettings.StepNames), "Street names", "Name road aggregates after the networks exist.");
             Add(nameof(MapBuilderSettings.StepTrees), "Trees", "Place trees in spatial chunks.");
             Add(nameof(MapBuilderSettings.StepStartTiles), "Start tiles", "Set the starting map tiles.");
-            Add(nameof(MapBuilderSettings.ImportNow), "Import", "Import the selected package (Map Editor only).");
+            Add(nameof(MapBuilderSettings.ImportNow), "Import into the open editor map", "Map Editor only (disabled in the main menu): imports the package into the map open in the editor. From the main menu use Create playable map.");
             Add(nameof(MapBuilderSettings.CancelImport), "Cancel", "Stop the running import after the current batch.");
             Add(nameof(MapBuilderSettings.UndoLastImport), "Undo last import", "Delete the networks, trees and water sources created by the last import (terrain and climate are not reverted).");
             Add(nameof(MapBuilderSettings.FlipHeightmapRows), "Flip heightmap rows (north/south)", "Turn on if the imported terrain is mirrored north-south. Also applies to the world map and resource maps.");
@@ -327,7 +334,6 @@ namespace CS2MapBuilder.Settings
             Add(nameof(MapBuilderSettings.SetSeaLevel), "Set the sea level", "Set the global sea level from the package (0 when the package has no sea).");
             Add(nameof(MapBuilderSettings.WaterRampFrames), "Water source ramp (frames)", "Grow water source radii from 10% to full over this many frames. 0 = full radius at once.");
             Add(nameof(MapBuilderSettings.SkipTreesBelowSeaLevel), "Skip trees below sea level", "Do not place trees whose ground is below the sea level.");
-            Add(nameof(MapBuilderSettings.AllowOutsideEditor), "Allow import outside the Map Editor", "Off by default. Importing into a running city is not supported.");
             return d;
         }
 

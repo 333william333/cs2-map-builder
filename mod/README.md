@@ -54,7 +54,9 @@ In the main menu, a notification announces each package that has no saved map ye
 
 **Manual import.** Map Editor -> tab **CS2 Map Builder** (package icon): pick package, tick steps, **Import**, **Cancel**,
 **Undo last import**, progress and the last log lines. Fallback with the same actions:
-Options -> CS2 Map Builder. Imports are refused outside the Map Editor unless "Allow import outside the Map Editor" is on.
+Options -> CS2 Map Builder (in the editor). Import, Undo and Save as playable map are disabled outside the Map Editor;
+the old "Allow import outside the Map Editor" option was removed after a main-menu import failed in game (no terrain,
+climate or map tiles exist there).
 Logs: `Logs\CS2MapBuilder.log` and `ModsData\CS2MapBuilder\import.log` (per-step timing, counts, skipped/failed with
 reasons, final summary). `ModsData\CS2MapBuilder\prefabs.txt` lists every net/tree/theme/climate prefab name in your game.
 
@@ -119,8 +121,11 @@ falls back to the default image.
    `m_Radius == 0` is ignored (so the ramp starts at 10 %, not 0), and `m_Polluted > 0` really switches to a flow source
    (confirmed in code, was "unverified"). Transform.y is set to the sampled ground and `m_Height = level - ground`,
    matching `WaterSystem.UpdateWaterSourcesHeights`.
-5. `ReplaceHeightmap` / `ReplaceWorldHeightmap` use the current `heightScaleOffset`, so `SetTerrainProperties` must
-   come first (answers part of 11.2). Outside the editor the terrain keeps the world-map texture you pass (do not destroy
+5. `ReplaceHeightmap` / `ReplaceWorldHeightmap` use the current `heightScaleOffset`. `SetTerrainProperties` and both
+   Replace methods go through `FinalizeTerrainData`, which dereferences the current heightmap texture (in-game: a
+   NullReferenceException in `SetTerrainProperties` when no terrain existed), and `SetWorldHeightmap` compares against
+   it. The mod therefore sets the `heightScaleOffset` property, replaces the playable heightmap first and the world map
+   second, and calls `SetTerrainProperties` only when a heightmap exists. Outside the editor the terrain keeps the world-map texture you pass (do not destroy
    it), and a world map whose size differs from the heightmap is discarded.
 6. `ClimatePrefab.RebuildCurves()` is public; `PrefabBase.Clone()` deep-copies through JSON, so the cloned seasons are
    independent objects (answers part of 11.7). `PrefabSystem.AddPrefab` returns bool.
@@ -130,3 +135,30 @@ falls back to the default image.
    out-of-game checker targets .NET 10 (the mod itself stays net48).
 9. Package type names must not be `RoadData`/`TreeData`/`WaterSourceData` in files that import `Game.Prefabs`
    (they exist there); the pure models are `PackageRoads`/`PackageTrees`.
+10. `NameSystem.SetCustomName` writes through `EndFrameBarrier`, a `SafeCommandBufferSystem` that refuses new command
+    buffers until `AllowBarrier<EndFrameBarrier>` has run in MainLoop. ToolUpdate runs before that (in-game:
+    "Trying to create EntityCommandBuffer when it's not allowed!"), UIUpdate after it, so names are applied by
+    `NameApplySystem` at UIUpdate.
+11. The New Game list (`MenuUISystem.UpdateMaps` -> `MenuHelpers.UpdateMeta` over `AssetDatabase.global`) shows a
+    non-game map only when `MapInfo.isPlayable` is true; `SaveMap` sets it from `MapIsPlayable()`. A map saved with an
+    incomplete checklist exists in Maps and Load Map but not under New Game.
+12. Legacy water: setting `WaterSystem.UseLegacyWaterSources = false` is exactly what the Water panel's
+    "Upgrade water sources" button does; the Water step does it before creating sources.
+
+## Map paths
+
+- Saved user maps: `%LocalLow%\Colossal Order\Cities Skylines II\Maps\<platform user id>\<name>.cok` (+ `.cid`),
+  i.e. user data + `EnvPath.GetSpecialPath<MapMetadata>()` = `"Maps/" + PlatformManager.userSpecificPath`, written by
+  `MapPanelSystem.SaveMap` into `AssetDatabase.user`. Both paths are logged in `import.log` on reaching the main menu.
+- New Game custom maps: every `MapMetadata` in `AssetDatabase.global` that is not in the game's own database and has
+  `isPlayable = true`.
+
+## Autorun test hook
+
+On reaching the main menu, if `ModsData\CS2MapBuilder\autorun.json` exists:
+`{ "package": "MyMap", "mapName": "MyMap", "overwrite": true, "quitWhenDone": true }`, the mod first renames it to
+`autorun.json.taken-<time>` (it never runs twice), runs Create playable map, writes
+`ModsData\CS2MapBuilder\autorun-result.json` after every phase (heartbeat list, phases with status and seconds,
+import step lines, each checklist requirement, the save target and whether the file exists, the map found in the
+game's map listing with id, user/playable flags and `listedUnderNewGame`), returns to the main menu, waits 10 s and
+quits when `quitWhenDone` is true. Without the file it does nothing.

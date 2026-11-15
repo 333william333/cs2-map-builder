@@ -58,6 +58,9 @@ Advanced helps.
 If New Game does not list the map although the log says `saved and playable`, send the log and a screenshot of the
 editor's Load Map list.
 
+Unattended variant (for automated testing): put `autorun.json` in `ModsData\CS2MapBuilder\` as described in
+README.md "Autorun test hook", start the game, and read `autorun-result.json` afterwards.
+
 ## 2. Loading and the map editor tab
 
 1. Main menu -> Editor -> Map Editor -> new map.
@@ -109,10 +112,10 @@ at x=+2000, z=0.
 2. Look: the sea fills the low strip in the south (20 m) but not the plain (100 m). The pit east of the center fills
    slowly into a lake. Let the game run (time speed) for 3-5 minutes.
 3. **Send:** the lines `Step Water ...`, `sea level ... -> 50.0`, `Water: 1 sources created ...` and any line
-   that starts with `WARNING: this map uses LEGACY water sources`. Note roughly how many minutes the lake takes.
+   that starts with `map used legacy water sources: upgraded` (the mod upgrades automatically). Note roughly how many minutes the lake takes.
 4. If the sea does not change: check that **Set the sea level** is on. If the lake never appears: set
    **Water source ramp (frames)** to 0 and import again (Undo first removes the source).
-   If it says LEGACY: click *Upgrade water sources* in the editor's Water panel and import again.
+   If water still behaves like legacy water: click *Upgrade water sources* in the editor's Water panel and import again.
 
 ## 6. Trees in increasing numbers (question 11.10)
 
@@ -172,7 +175,6 @@ Package: `sample-package`.
 | Set the sea level | on | the sea level should be left untouched |
 | Water source ramp (frames) | 120 | lakes do not fill |
 | Skip trees below sea level | on | trees are missing on low land that is not sea |
-| Allow import outside the Map Editor | off | leave alone: importing into a city is not supported |
 
 Undo only works for the latest import in the same game session. Terrain, climate, sea level, resources, names and
 start tiles are not restored by Undo.

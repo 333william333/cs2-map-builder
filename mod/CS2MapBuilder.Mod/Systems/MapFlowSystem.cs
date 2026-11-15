@@ -41,10 +41,16 @@ namespace CS2MapBuilder.Systems
         public static string StatusLine => Instance?.m_Status ?? string.Empty;
         public static bool IsBusy => Instance?.m_Job != null;
 
-        public static void RequestCreate(string package, string mapName, bool overwrite)
+        /// <summary>Report for the autorun test hook (null for normal use).</summary>
+        public static AutorunReport Report { get; set; }
+        /// <summary>Incremented whenever a flow ends (success or not).</summary>
+        public static int FinishedCount { get; private set; }
+
+        /// <summary>Returns true if the flow started; otherwise <see cref="StatusLine"/> says why not.</summary>
+        public static bool RequestCreate(string package, string mapName, bool overwrite)
         {
-            try { Instance?.StartCreate(package, mapName, overwrite); }
-            catch (Exception e) { ImportLog.Error("Create playable map failed to start", e); }
+            try { return Instance != null && Instance.StartCreate(package, mapName, overwrite); }
+            catch (Exception e) { ImportLog.Error("Create playable map failed to start", e); return false; }
         }
 
         public static void RequestSaveCurrent(string package, string mapName, bool overwrite)
@@ -88,22 +94,23 @@ namespace CS2MapBuilder.Systems
 
         // ------------------------------------------------------------------ requests
 
-        private void StartCreate(string package, string mapName, bool overwrite)
+        private bool StartCreate(string package, string mapName, bool overwrite)
         {
-            if (!PrepareRequest("Create playable map", package, mapName, overwrite, needPackage: true)) return;
+            if (!PrepareRequest("Create playable map", package, mapName, overwrite, needPackage: true)) return false;
             var gm = GameManager.instance;
             if (gm.gameMode == GameMode.Editor)
             {
                 Refuse("You are in the Map Editor. 'Create playable map' starts a NEW map and would discard this one. " +
                        "Go to the main menu first, or use the editor tab's 'Save as playable map' for the map you have open.");
-                return;
+                return false;
             }
             if (gm.gameMode != GameMode.MainMenu)
             {
                 Refuse("Return to the main menu first (Create playable map does not run from inside a city).");
-                return;
+                return false;
             }
             Begin(CreateJob());
+            return true;
         }
 
         private void StartSaveCurrent(string package, string mapName, bool overwrite)
@@ -233,6 +240,8 @@ namespace CS2MapBuilder.Systems
             m_Timer.Stop();
             m_Status = message;
             ImportLog.Info($"Map flow {(ok ? "SUCCEEDED" : "ENDED")} after {m_Timer.Elapsed.TotalSeconds:0.0} s: {message}");
+            Report?.Finish(ok, message);
+            FinishedCount++;
             Notify(ok ? "Playable map created" : "CS2 Map Builder", message, ok ? ProgressState.Complete : ProgressState.Failed, null, remove: true);
         }
 
@@ -247,6 +256,7 @@ namespace CS2MapBuilder.Systems
             if (m_StepTimer.IsRunning) ImportLog.Info($"Map flow: phase done in {m_StepTimer.Elapsed.TotalSeconds:0.0} s");
             m_StepTimer = Stopwatch.StartNew();
             ImportLog.Info("Map flow: " + name);
+            Report?.BeginPhase(name);
         }
 
         // ------------------------------------------------------------------ create: main menu -> editor -> import
@@ -300,10 +310,23 @@ namespace CS2MapBuilder.Systems
             }
             if (ImportSystem.LastAborted)
             {
+                if (Report != null)
+                {
+                    Report.importAborted = true;
+                    Report.importResult = ImportSystem.LastResult;
+                    Report.importSteps = new List<string>(ImportSystem.LastStepLines);
+                }
                 Finish(false, "The import was stopped (" + ImportSystem.LastResult + "). The map was not saved. Details in import.log.");
                 yield break;
             }
             ImportLog.Info("Map flow: import finished: " + ImportSystem.LastResult);
+            if (Report != null)
+            {
+                Report.importAborted = ImportSystem.LastAborted;
+                Report.importResult = ImportSystem.LastResult;
+                Report.importSteps = new List<string>(ImportSystem.LastStepLines);
+                Report.Write();
+            }
             yield return SaveJob(false);
         }
 
@@ -367,6 +390,15 @@ namespace CS2MapBuilder.Systems
                 yield return new WaitFrames(30);
             }
             if (!playable) ImportLog.Warn("Map flow: checklist still failing after the settle time: " + failing);
+            if (Report != null)
+            {
+                Report.checklist.Clear();
+                foreach (var item in new[] { "starting area", "water in the starting area", "road outside connection", "map name" })
+                    Report.checklist.Add(new AutorunReport.Requirement { requirement = item, passed = !failing.Contains(item) });
+                Report.checklist.Add(new AutorunReport.Requirement { requirement = "MapPanelSystem.MapIsPlayable()", passed = SafeIsPlayable(mapPanel) });
+                Report.playable = playable;
+                Report.Beat($"checklist after {frames} frames: {(playable ? "all OK" : "missing " + failing)}");
+            }
             if (!nameSet)
             {
                 OpenSaveDialogFallback("the map name could not be filled in automatically");
@@ -405,6 +437,14 @@ namespace CS2MapBuilder.Systems
                 var path = SaveHelpers.GetAssetDataPath<MapMetadata>(AssetDatabase.user, m_MapName);
                 save = () => mapPanel.SaveMap(m_MapName, Colossal.Hash128.Empty, null, AssetDatabase.user, path, true, m => savedMeta = m);
             }
+            string expectedFile = Path.Combine(MapCatalog.UserMapsFolder, m_MapName + ".cok");
+            ImportLog.Info($"Map flow: save target {(existing != null ? "(overwrite) " : "")}{expectedFile}");
+            if (Report != null)
+            {
+                Report.saveAssetDataPath = existing != null ? "overwrite of " + existing.Guid : SaveHelpers.GetAssetDataPath<MapMetadata>(AssetDatabase.user, m_MapName).ToString();
+                Report.saveExpectedFile = expectedFile;
+                Report.Beat("saving to " + expectedFile);
+            }
             m_SaveStarted = true;
             TaskManager.instance.EnqueueTask(SaveHelpers.kSaveLoadTaskName, async () =>
             {
@@ -432,15 +472,36 @@ namespace CS2MapBuilder.Systems
             ImportLog.Info($"Map flow: save finished in {sw.Elapsed.TotalSeconds:0.0} s, callback {(savedMeta != null ? "received" : "not yet received")}.");
 
             var check = MapCatalog.Find(m_MapName);
+            bool fileExists = File.Exists(expectedFile);
+            var matches = new List<string>();
+            try
+            {
+                if (Directory.Exists(MapCatalog.UserMapsFolder))
+                    foreach (var f in Directory.GetFiles(MapCatalog.UserMapsFolder, m_MapName + "*")) matches.Add(f);
+            }
+            catch (Exception) { }
+            ImportLog.Info($"Map flow: file {(fileExists ? "exists" : "NOT found")}: {expectedFile}; listing: {(check == null ? "not found" : $"'{check.DisplayName}' id {check.Guid} user={check.IsUserMap} playable={check.IsPlayable} listedUnderNewGame={check.ListedUnderNewGame}")}");
+            if (Report != null)
+            {
+                Report.saveFileExists = fileExists;
+                Report.saveFolderMatches = matches;
+                Report.mapListingFound = check != null;
+                Report.mapListingName = check?.DisplayName;
+                Report.mapListingId = check?.Guid.ToString();
+                Report.mapListingIsUserMap = check?.IsUserMap;
+                Report.mapListingIsPlayable = check?.IsPlayable;
+                Report.listedUnderNewGame = check?.ListedUnderNewGame;
+                Report.Write();
+            }
             if (check == null)
             {
                 OpenSaveDialogFallback("the saved map was not found in the map list afterwards");
                 yield break;
             }
-            if (playable)
+            if (playable && check.ListedUnderNewGame)
                 Finish(true, $"Map '{m_MapName}' is saved and playable. Find it under New Game (and in the editor's Load Map list).");
             else
-                Finish(false, $"Map '{m_MapName}' is saved but the checklist is not complete (missing: {failing}). It may not be listed under New Game. " +
+                Finish(false, $"Map '{m_MapName}' is saved but the checklist is not complete (missing: {(failing.Length > 0 ? failing : "the saved map is not flagged playable")}). New Game only lists playable custom maps. " +
                               "Fix that in the editor (Map settings > Checklist), then save again with the editor's Save Map and pick the same map to overwrite.");
         }
 
@@ -455,6 +516,11 @@ namespace CS2MapBuilder.Systems
             if (!IsNameFieldValid(panel)) missing.Add("map name");
             if (missing.Count == 0 && !panel.MapIsPlayable()) missing.Add("MapIsPlayable() is false for an unknown reason");
             return string.Join(", ", missing);
+        }
+
+        private static bool SafeIsPlayable(MapPanelSystem panel)
+        {
+            try { return panel.MapIsPlayable(); } catch (Exception) { return false; }
         }
 
         private static bool IsNameFieldValid(MapPanelSystem panel)
